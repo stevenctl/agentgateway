@@ -9,6 +9,7 @@ import (
 	"istio.io/istio/pkg/kube/kubetypes"
 	corev1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	inf "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -84,6 +85,7 @@ func NewAgwCollections(
 	agwControllerName string,
 	systemNamespace string,
 	clusterID string,
+	extraStatusGVKs []schema.GroupVersionKind,
 ) (*AgwCollections, error) {
 	agwCollections := &AgwCollections{
 		Client:          commoncol.Client,
@@ -158,6 +160,7 @@ func NewAgwCollections(
 		agwCollections.InferencePools = krt.WrapClient(kclient.NewDelayedInformer[*inf.InferencePool](commoncol.Client, inferencePoolGVR, kubetypes.StandardInformer, kclient.Filter{ObjectFilter: commoncol.Client.ObjectFilter()}), commoncol.KrtOpts.ToOptions("informer/InferencePools")...)
 	}
 	agwCollections.SetupIndexes()
+	agwCollections.StatusCollections = status.NewStatusCollections(extraStatusGVKs)
 
 	return agwCollections, nil
 }

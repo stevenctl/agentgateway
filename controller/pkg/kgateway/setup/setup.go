@@ -316,12 +316,17 @@ func (s *setup) Start(ctx context.Context) error {
 		return err
 	}
 
+	var extraStatusGVKs []schema.GroupVersionKind
+	for gvk := range s.extraAgwPolicyStatusHandlers {
+		extraStatusGVKs = append(extraStatusGVKs, gvk)
+	}
 	agwCollections, err := agwplugins.NewAgwCollections(
 		commoncol,
 		s.agwControllerName,
 		// control plane system namespace (default is agentgateway-system)
 		namespaces.GetPodNamespace(),
 		s.apiClient.ClusterID().String(),
+		extraStatusGVKs,
 	)
 	if err != nil {
 		slog.Error("error creating agw common collections", "error", err)

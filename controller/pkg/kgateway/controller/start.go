@@ -25,7 +25,6 @@ import (
 	"github.com/agentgateway/agentgateway/controller/pkg/apiclient"
 	"github.com/agentgateway/agentgateway/controller/pkg/deployer"
 	"github.com/agentgateway/agentgateway/controller/pkg/kgateway/agentgatewaysyncer"
-	"github.com/agentgateway/agentgateway/controller/pkg/kgateway/agentgatewaysyncer/status"
 	"github.com/agentgateway/agentgateway/controller/pkg/kgateway/wellknown"
 	"github.com/agentgateway/agentgateway/controller/pkg/pluginsdk"
 	"github.com/agentgateway/agentgateway/controller/pkg/pluginsdk/collections"
@@ -114,18 +113,7 @@ func NewControllerBuilder(ctx context.Context, cfg StartConfig) (*ControllerBuil
 	// This only effects metrics in the resources subsystem and is not required for other metrics.
 	//metrics.StartResourceSyncMetricsProcessing(ctx)
 
-	// Initialize the shared status queue and attach it to AgwCollections
-	// before building plugins, so plugins can register status handlers during init.
-	cfg.AgwCollections.StatusCollections = status.NewStatusCollections()
-
 	agwMergedPlugins := agwPluginFactory(cfg)(ctx, cfg.AgwCollections)
-
-	// Add extra GVKs from external status handlers after plugins have been built.
-	var gvks []schema.GroupVersionKind
-	for gvk := range cfg.ExtraAgwResourceStatusHandlers {
-		gvks = append(gvks, gvk)
-	}
-	cfg.AgwCollections.StatusCollections.AddExtraGVKs(gvks)
 
 	agwSyncer := agentgatewaysyncer.NewAgwSyncer(
 		cfg.AgwControllerName,
