@@ -36,12 +36,18 @@ type StatusCollections struct {
 	extraGVKs []schema.GroupVersionKind
 }
 
-// NewStatusCollections creates a StatusCollections with an optional immutable set of extra GVKs.
-// extraGVKs should be provided at construction time and not modified after.
-func NewStatusCollections(extraGVKs []schema.GroupVersionKind) *StatusCollections {
-	return &StatusCollections{
-		extraGVKs: extraGVKs,
-	}
+// NewStatusCollections creates a StatusCollections.
+// Extra GVKs can be added later via AddExtraGVKs before the queue is started.
+func NewStatusCollections() *StatusCollections {
+	return &StatusCollections{}
+}
+
+// AddExtraGVKs appends additional GVKs to track for status syncing.
+// Must be called before SetQueue.
+func (s *StatusCollections) AddExtraGVKs(gvks []schema.GroupVersionKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extraGVKs = append(s.extraGVKs, gvks...)
 }
 
 func (s *StatusCollections) Register(sr StatusRegistration) {

@@ -17,6 +17,7 @@ import (
 	"github.com/agentgateway/agentgateway/controller/api/v1alpha1/agentgateway"
 	"github.com/agentgateway/agentgateway/controller/pkg/apiclient"
 	kgwversioned "github.com/agentgateway/agentgateway/controller/pkg/client/clientset/versioned"
+	"github.com/agentgateway/agentgateway/controller/pkg/kgateway/agentgatewaysyncer/status"
 	"github.com/agentgateway/agentgateway/controller/pkg/kgateway/wellknown"
 	"github.com/agentgateway/agentgateway/controller/pkg/pluginsdk/collections"
 	"github.com/agentgateway/agentgateway/controller/pkg/pluginsdk/krtutil"
@@ -59,6 +60,9 @@ type AgwCollections struct {
 	// agentgateway resources
 	Backends             krt.Collection[*agentgateway.AgentgatewayBackend]
 	AgentgatewayPolicies krt.Collection[*agentgateway.AgentgatewayPolicy]
+
+	// StatusCollections is the shared status queue that plugins can use to emit status updates.
+	StatusCollections *status.StatusCollections
 
 	// ControllerName is the name of the Gateway controller.
 	ControllerName string

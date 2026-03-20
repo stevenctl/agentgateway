@@ -161,6 +161,7 @@ func Syncer(t *testing.T, ctx plugins.PolicyCtx, includeStatusKinds ...string) (
 			t.Log(string(b))
 		}
 	})
+	ctx.Collections.StatusCollections = status.NewStatusCollections()
 	syncer := agentgatewaysyncer.NewAgwSyncer(
 		wellknown.DefaultAgwControllerName,
 		// Only used for NACK, so no need to do anything special here.
@@ -169,7 +170,6 @@ func Syncer(t *testing.T, ctx plugins.PolicyCtx, includeStatusKinds ...string) (
 		agwPluginFactory(ctx.Collections),
 		nil,
 		opts,
-		nil,
 	)
 	fc.RunAndWait(stop)
 	sq := &TestStatusQueue{
