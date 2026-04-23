@@ -28,13 +28,11 @@ fn test_permissive() {
 	let exec_serde = full_example_executor();
 	let exec = exec_serde.as_executor();
 	let assert_compile_failure = |expr: Expression| {
-		assert!(
-			exec
-				.eval(&expr)
-				.expect_err("must be an error")
-				.to_string()
-				.contains("could not be compiled")
-		);
+		assert!(exec
+			.eval(&expr)
+			.expect_err("must be an error")
+			.to_string()
+			.contains("could not be compiled"));
 	};
 	let valid = Expression::new_permissive("1 + 1");
 	assert_eq!(2, exec.eval(&valid).unwrap().json().unwrap());
@@ -323,9 +321,11 @@ fn test_properties() {
 	test(r#"!a.b"#, &["a.b"]);
 	test(r#"a.b < c"#, &["a.b", "c"]);
 	test(r#"a.b + c + 2"#, &["a.b", "c"]);
-	// This is not right! Should just be 'a' probably
-	test(r#"a["b"].c"#, &["a.c"]);
+	test(r#"a["b"].c"#, &["a"]);
+	test(r#"a["b"]["c"]"#, &["a"]);
 	test(r#"a.b[0]"#, &["a.b"]);
+	test(r#"a.b[0].c"#, &["a.b"]);
+	test(r#"a[b.c]"#, &["a", "b.c"]);
 	test(r#"{"a":"b"}.a"#, &[]);
 	// Test extauthz namespace recognition
 	test(r#"extauthz.user_id"#, &["extauthz.user_id"]);
