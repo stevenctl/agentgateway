@@ -2296,6 +2296,7 @@
       },
       "oneOf": [
         {
+          "description": "Ship the message to an external MCP policy server over gRPC.",
           "type": "object",
           "properties": {
             "policies": {
@@ -2330,9 +2331,6 @@
               "const": "remote"
             }
           },
-          "required": [
-            "kind"
-          ],
           "oneOf": [
             {
               "description": "Service reference. Service must be defined in the top level services list.",
@@ -2387,6 +2385,45 @@
                 "backend"
               ]
             }
+          ],
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Apply regex/PII rules in-process (mask or reject); no external service.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "description": "Action to take when a regex rule matches.",
+              "$ref": "#/$defs/Action",
+              "default": "mask"
+            },
+            "rules": {
+              "description": "Regex or built-in patterns to evaluate.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RegexRule"
+              }
+            },
+            "rejection": {
+              "description": "Error returned to the client when a rule matches under `action: reject`.",
+              "$ref": "#/$defs/McpRejection",
+              "default": {}
+            },
+            "failureMode": {
+              "description": "Behavior when the body cannot be inspected or re-encoded.",
+              "$ref": "#/$defs/FailureMode",
+              "default": "failClosed"
+            },
+            "kind": {
+              "type": "string",
+              "const": "regex"
+            }
+          },
+          "required": [
+            "kind",
+            "rules"
           ]
         }
       ]
@@ -3381,6 +3418,94 @@
     "HeaderOrPseudo": {
       "type": "string"
     },
+    "Action": {
+      "oneOf": [
+        {
+          "description": "Replace matching content with masked text.",
+          "type": "string",
+          "const": "mask"
+        },
+        {
+          "description": "Reject the request or response when content matches.",
+          "type": "string",
+          "const": "reject"
+        }
+      ]
+    },
+    "RegexRule": {
+      "anyOf": [
+        {
+          "description": "Use a built-in sensitive data pattern.",
+          "type": "object",
+          "properties": {
+            "builtin": {
+              "description": "Built-in pattern name.",
+              "$ref": "#/$defs/Builtin"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "builtin"
+          ]
+        },
+        {
+          "description": "Use a custom regular expression.",
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "description": "Regular expression pattern to evaluate.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "pattern"
+          ]
+        }
+      ]
+    },
+    "Builtin": {
+      "oneOf": [
+        {
+          "description": "U.S. Social Security number pattern.",
+          "type": "string",
+          "const": "ssn"
+        },
+        {
+          "description": "Credit card number pattern.",
+          "type": "string",
+          "const": "creditCard"
+        },
+        {
+          "description": "Phone number pattern.",
+          "type": "string",
+          "const": "phoneNumber"
+        },
+        {
+          "description": "Email address pattern.",
+          "type": "string",
+          "const": "email"
+        },
+        {
+          "description": "Canadian Social Insurance Number pattern.",
+          "type": "string",
+          "const": "caSin"
+        }
+      ]
+    },
+    "McpRejection": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "JSON-RPC error message. Defaults to a generic policy-violation message.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "Authorization": {
       "$ref": "#/$defs/RuleSet"
     },
@@ -3823,81 +3948,6 @@
       "additionalProperties": false,
       "required": [
         "rules"
-      ]
-    },
-    "Action": {
-      "oneOf": [
-        {
-          "description": "Replace matching content with masked text.",
-          "type": "string",
-          "const": "mask"
-        },
-        {
-          "description": "Reject the request or response when content matches.",
-          "type": "string",
-          "const": "reject"
-        }
-      ]
-    },
-    "RegexRule": {
-      "anyOf": [
-        {
-          "description": "Use a built-in sensitive data pattern.",
-          "type": "object",
-          "properties": {
-            "builtin": {
-              "description": "Built-in pattern name.",
-              "$ref": "#/$defs/Builtin"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "builtin"
-          ]
-        },
-        {
-          "description": "Use a custom regular expression.",
-          "type": "object",
-          "properties": {
-            "pattern": {
-              "description": "Regular expression pattern to evaluate.",
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "pattern"
-          ]
-        }
-      ]
-    },
-    "Builtin": {
-      "oneOf": [
-        {
-          "description": "U.S. Social Security number pattern.",
-          "type": "string",
-          "const": "ssn"
-        },
-        {
-          "description": "Credit card number pattern.",
-          "type": "string",
-          "const": "creditCard"
-        },
-        {
-          "description": "Phone number pattern.",
-          "type": "string",
-          "const": "phoneNumber"
-        },
-        {
-          "description": "Email address pattern.",
-          "type": "string",
-          "const": "email"
-        },
-        {
-          "description": "Canadian Social Insurance Number pattern.",
-          "type": "string",
-          "const": "caSin"
-        }
       ]
     },
     "Webhook": {

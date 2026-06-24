@@ -305,6 +305,14 @@
 |`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`binds[].listeners[].routes[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`binds[].listeners[].routes[].policies.authorization`|object|Authorization rules for incoming HTTP requests.|
 |`binds[].listeners[].routes[].policies.authorization.rules`|[]object|CEL authorization rules to evaluate for a request.|
@@ -2576,6 +2584,14 @@
 |`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`binds[].listeners[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`binds[].listeners[].routes[].backends[].mcp.statefulMode`|enum|Possible values: `stateless`, `stateful`.|
 |`binds[].listeners[].routes[].backends[].mcp.prefixMode`|enum|Possible values: `always`, `conditional`, `null`.|
@@ -3031,6 +3047,14 @@
 |`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`binds[].listeners[].routes[].backends[].ai.policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`binds[].listeners[].routes[].backends[].ai.policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`binds[].listeners[].routes[].backends[].ai.policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -4414,6 +4438,14 @@
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -5767,6 +5799,14 @@
 |`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`binds[].listeners[].routes[].backends[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`binds[].listeners[].routes[].backends[].policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`binds[].listeners[].routes[].backends[].policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -8056,6 +8096,14 @@
 |`policies[].policy.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`policies[].policy.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`policies[].policy.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`policies[].policy.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`policies[].policy.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`policies[].policy.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`policies[].policy.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`policies[].policy.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`policies[].policy.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`policies[].policy.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`policies[].policy.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`policies[].policy.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`policies[].policy.authorization`|object|Authorization rules for incoming HTTP requests.|
 |`policies[].policy.authorization.rules`|[]object|CEL authorization rules to evaluate for a request.|
@@ -10324,6 +10372,14 @@
 |`backends[].mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`backends[].mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`backends[].mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`backends[].mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`backends[].mcp.targets[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`backends[].mcp.statefulMode`|enum|Possible values: `stateless`, `stateful`.|
 |`backends[].mcp.prefixMode`|enum|Possible values: `always`, `conditional`, `null`.|
@@ -10779,6 +10835,14 @@
 |`backends[].ai.policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`backends[].ai.policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`backends[].ai.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`backends[].ai.policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`backends[].ai.policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`backends[].ai.policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`backends[].ai.policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`backends[].ai.policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`backends[].ai.policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`backends[].ai.policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`backends[].ai.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`backends[].ai.policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`backends[].ai.policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`backends[].ai.policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -12162,6 +12226,14 @@
 |`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`backends[].ai.groups[].providers[].policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`backends[].ai.groups[].providers[].policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -13513,6 +13585,14 @@
 |`backends[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`backends[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`backends[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`backends[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`backends[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`backends[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`backends[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`backends[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`backends[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`backends[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`backends[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`backends[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`backends[].policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`backends[].policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -14654,6 +14734,14 @@
 |`routeGroups[].routes[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`routeGroups[].routes[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`routeGroups[].routes[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`routeGroups[].routes[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`routeGroups[].routes[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`routeGroups[].routes[].policies.authorization`|object|Authorization rules for incoming HTTP requests.|
 |`routeGroups[].routes[].policies.authorization.rules`|[]object|CEL authorization rules to evaluate for a request.|
@@ -16925,6 +17013,14 @@
 |`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`routeGroups[].routes[].backends[].mcp.targets[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`routeGroups[].routes[].backends[].mcp.statefulMode`|enum|Possible values: `stateless`, `stateful`.|
 |`routeGroups[].routes[].backends[].mcp.prefixMode`|enum|Possible values: `always`, `conditional`, `null`.|
@@ -17380,6 +17476,14 @@
 |`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`routeGroups[].routes[].backends[].ai.policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`routeGroups[].routes[].backends[].ai.policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`routeGroups[].routes[].backends[].ai.policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -18763,6 +18867,14 @@
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -20116,6 +20228,14 @@
 |`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`routeGroups[].routes[].backends[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`routeGroups[].routes[].backends[].policies.a2a`|object|Mark this traffic as A2A to enable A2A processing and telemetry.|
 |`routeGroups[].routes[].backends[].policies.inferenceRouting`|object|Route requests through an endpoint picker before forwarding to this backend.|
@@ -24269,6 +24389,14 @@
 |`mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`mcp.targets[].policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`mcp.targets[].policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`mcp.targets[].policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`mcp.statefulMode`|enum|Possible values: `stateless`, `stateful`.|
 |`mcp.prefixMode`|enum|Possible values: `always`, `conditional`, `null`.|
@@ -24460,6 +24588,14 @@
 |`mcp.policies.mcpGuardrails.processors[].requestHeaders.allowed`|[]string||
 |`mcp.policies.mcpGuardrails.processors[].requestHeaders.disallowed`|[]string||
 |`mcp.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `remote`.|
+|`mcp.policies.mcpGuardrails.processors[].action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
+|`mcp.policies.mcpGuardrails.processors[].rules`|[]object|Regex or built-in patterns to evaluate.|
+|`mcp.policies.mcpGuardrails.processors[].rules[].builtin`|enum|Use a built-in sensitive data pattern.<br>Built-in pattern name.<br>Possible values: `ssn`, `creditCard`, `phoneNumber`, `email`, `caSin`.|
+|`mcp.policies.mcpGuardrails.processors[].rules[].pattern`|string|Use a custom regular expression.<br>Regular expression pattern to evaluate.|
+|`mcp.policies.mcpGuardrails.processors[].rejection`|object|Error returned to the client when a rule matches under `action: reject`.|
+|`mcp.policies.mcpGuardrails.processors[].rejection.message`|string|JSON-RPC error message. Defaults to a generic policy-violation message.|
+|`mcp.policies.mcpGuardrails.processors[].failureMode`|enum|Behavior when the body cannot be inspected or re-encoded.<br>Possible values: `failClosed`, `failOpen`.|
+|`mcp.policies.mcpGuardrails.processors[].kind`|enum|Possible values: `regex`.|
 |`mcp.policies.mcpGuardrails.processors[].methods`|object|Allowlist: only methods listed here run through this processor, at the<br>configured phase. Keys may be exact (`tools/call`), prefix (`tools/*`),<br>or suffix (`*/list`) wildcards, or `*` for all methods. Methods matching<br>no key bypass this processor; see [`phase::resolve`] for match precedence.|
 |`mcp.policies.authorization`|object|Authorization rules for incoming HTTP requests.|
 |`mcp.policies.authorization.rules`|[]object|CEL authorization rules to evaluate for a request.|

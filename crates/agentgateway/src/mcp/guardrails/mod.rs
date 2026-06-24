@@ -35,9 +35,12 @@ impl McpGuardrailsDynamicMetadata {
 
 mod client;
 pub mod methods;
+mod payload;
 pub mod phase;
+mod regex;
 
 pub use phase::Phase;
+pub use regex::RegexProcessor;
 
 #[derive(Debug)]
 pub enum Outcome<T> {
@@ -77,7 +80,10 @@ pub struct Processor {
 #[serde(rename_all = "camelCase", tag = "kind")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ProcessorKind {
+	/// Ship the message to an external MCP policy server over gRPC.
 	Remote(Remote),
+	/// Apply regex/PII rules in-process (mask or reject); no external service.
+	Regex(RegexProcessor),
 }
 
 impl McpGuardrails {
@@ -214,6 +220,7 @@ impl Processor {
 				)
 				.await
 			},
+			ProcessorKind::Regex(rp) => regex::run_request::<P>(rp, ctx.method, ctx.params.as_mut()),
 		}
 	}
 
@@ -229,6 +236,7 @@ impl Processor {
 			ProcessorKind::Remote(remote) => {
 				client::check_response(remote, method, backends, body, req_ctx, client).await
 			},
+			ProcessorKind::Regex(rp) => regex::run_response(rp, method, body),
 		}
 	}
 }
@@ -302,14 +310,24 @@ processors:
   - kind: remote
     methods: { "tools/call": full }
     backend: my-backend
+  - kind: regex
+    methods: { "tools/call": full, "*/list": response }
+    action: mask
+    rules:
+      - builtin: ssn
+      - pattern: "AKIA[0-9A-Z]{16}"
+    rejection:
+      message: blocked
 "#;
 		let ext: McpGuardrails = serde_yaml::from_str(cfg).expect("deser McpGuardrails");
-		assert_eq!(ext.processors.len(), 2);
+		assert_eq!(ext.processors.len(), 3);
 
 		let d0 = &ext.processors[0];
 		assert_eq!(d0.methods.get("tools/call"), Some(&Phase::Request));
 		assert_eq!(d0.methods.get("*/list"), Some(&Phase::Response));
-		let ProcessorKind::Remote(r0) = &d0.kind;
+		let ProcessorKind::Remote(r0) = &d0.kind else {
+			panic!("expected remote processor");
+		};
 		assert!(matches!(
 			r0.target.as_ref(),
 			SimpleBackendReference::InlineBackend(_)
@@ -323,12 +341,20 @@ processors:
 				.contains(&crate::http::HeaderOrPseudo::Authority)
 		);
 
-		let ProcessorKind::Remote(r1) = &ext.processors[1].kind;
+		let ProcessorKind::Remote(r1) = &ext.processors[1].kind else {
+			panic!("expected remote processor");
+		};
 		assert!(matches!(
 			r1.target.as_ref(),
 			SimpleBackendReference::Backend(_)
 		));
 		assert_eq!(r1.failure_mode, FailureMode::FailClosed);
+
+		let ProcessorKind::Regex(r2) = &ext.processors[2].kind else {
+			panic!("expected regex processor");
+		};
+		assert_eq!(r2.rules.rules.len(), 2);
+		assert_eq!(r2.rejection.message.as_deref(), Some("blocked"));
 	}
 
 	fn ext_with_methods(pairs: &[(&str, Phase)]) -> McpGuardrails {

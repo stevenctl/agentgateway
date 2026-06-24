@@ -281,7 +281,7 @@ fn collect_headers(filter: &HeaderFilter, req: &crate::http::Request) -> Vec<wir
 // mcpGuardrails authorization outcomes that have no standard JSON-RPC/MCP code map to
 // application-defined codes in the server-error range (-32000..=-32099).
 // -32002 is intentionally skipped: rmcp assigns it to RESOURCE_NOT_FOUND.
-const PERMISSION_DENIED: ErrorCode = ErrorCode(-32001);
+pub(crate) const PERMISSION_DENIED: ErrorCode = ErrorCode(-32001);
 const RESOURCE_EXHAUSTED: ErrorCode = ErrorCode(-32003);
 
 fn translate_error(method: &str, backends: &[String], e: AuthorizationError) -> ErrorData {
