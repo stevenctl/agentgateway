@@ -3,7 +3,7 @@ use rmcp::model::{ErrorCode, ErrorData, ServerResult};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::methods;
+use super::payload::{self, VisitOutcome};
 use super::{FailureMode, McpRejection, Outcome};
 use crate::llm::policy::{Policy, RegexResult, RegexRules};
 use crate::*;
@@ -23,19 +23,14 @@ pub(crate) async fn run_request<P: DeserializeOwned>(
 	method: &str,
 	params: Option<&mut Bytes>,
 ) -> Outcome<P> {
+	let Some(visit) = payload::request_visit(method) else {
+		return Outcome::Pass;
+	};
 	let Some(body) = params else {
 		return Outcome::Pass;
 	};
-	let rules = &rp.rules;
-	match method {
-		methods::TOOLS_CALL | methods::PROMPTS_GET => edit(rp, method, body, "params", |body| {
-			mask_all(body, "arguments", rules)
-		}),
-		methods::RESOURCES_READ => edit(rp, method, body, "params", |body| {
-			mask_field(body, "uri", rules)
-		}),
-		_ => Outcome::Pass,
-	}
+	let mut leaf = |text: &mut String| mask_string(text, &rp.rules);
+	edit(rp, method, body, "params", |value| visit(value, &mut leaf))
 }
 
 pub(crate) async fn run_response(
@@ -43,37 +38,11 @@ pub(crate) async fn run_response(
 	method: &str,
 	body: &mut Bytes,
 ) -> Outcome<ServerResult> {
-	let rules = &rp.rules;
-	match method {
-		methods::TOOLS_LIST => edit(rp, method, body, "result", |b| {
-			drop_matching(b, "tools", rules)
-		}),
-		methods::PROMPTS_LIST => edit(rp, method, body, "result", |b| {
-			drop_matching(b, "prompts", rules)
-		}),
-		methods::RESOURCES_LIST => edit(rp, method, body, "result", |b| {
-			drop_matching(b, "resources", rules)
-		}),
-		methods::RESOURCES_TEMPLATES_LIST => edit(rp, method, body, "result", |b| {
-			drop_matching(b, "resourceTemplates", rules)
-		}),
-		methods::TOOLS_CALL => edit(rp, method, body, "result", |b| {
-			mask_array(b, "content", |c| mask_content_block(c, rules))
-				.then(|| mask_all(b, "structuredContent", rules))
-		}),
-		methods::RESOURCES_READ => edit(rp, method, body, "result", |b| {
-			mask_array(b, "contents", |v| mask_field(v, "text", rules))
-		}),
-		methods::PROMPTS_GET => edit(rp, method, body, "result", |b| {
-			mask_field(b, "description", rules).then(|| {
-				mask_array(b, "messages", |msg| match msg.get_mut("content") {
-					Some(content) => mask_content_block(content, rules),
-					None => VisitOutcome::Pass,
-				})
-			})
-		}),
-		_ => Outcome::Pass,
-	}
+	let Some(visit) = payload::response_visit(method) else {
+		return Outcome::Pass;
+	};
+	let mut leaf = |text: &mut String| mask_string(text, &rp.rules);
+	edit(rp, method, body, "result", |value| visit(value, &mut leaf))
 }
 
 fn edit<P: DeserializeOwned>(
@@ -114,84 +83,6 @@ fn inspect(text: &str, rules: &RegexRules) -> TextDecision {
 	}
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum VisitOutcome {
-	Pass,
-	Mutated,
-	Rejected,
-}
-
-impl VisitOutcome {
-	fn merge(self, other: Self) -> Self {
-		match (self, other) {
-			(Self::Rejected, _) | (_, Self::Rejected) => Self::Rejected,
-			(Self::Mutated, _) | (_, Self::Mutated) => Self::Mutated,
-			_ => Self::Pass,
-		}
-	}
-
-	fn then(self, next: impl FnOnce() -> Self) -> Self {
-		if self == Self::Rejected {
-			self // alredy rejected, short-circuit
-		} else {
-			self.merge(next())
-		}
-	}
-}
-
-fn each<T>(
-	items: impl IntoIterator<Item = T>,
-	mut f: impl FnMut(T) -> VisitOutcome,
-) -> VisitOutcome {
-	let mut outcome = VisitOutcome::Pass;
-	for item in items {
-		outcome = outcome.merge(f(item));
-		if outcome == VisitOutcome::Rejected {
-			break;
-		}
-	}
-	outcome
-}
-
-fn walk(value: &mut Value, rules: &RegexRules) -> VisitOutcome {
-	match value {
-		// TODO we need to look at non-string fields too probably
-		Value::String(text) => mask_string(text, rules),
-		Value::Array(values) => each(values, |v| walk(v, rules)),
-		Value::Object(values) => each(values.values_mut(), |v| walk(v, rules)),
-		_ => VisitOutcome::Pass,
-	}
-}
-
-// look at a specific field by name
-fn mask_field(value: &mut Value, key: &str, rules: &RegexRules) -> VisitOutcome {
-	match value.get_mut(key) {
-		Some(Value::String(text)) => mask_string(text, rules),
-		_ => VisitOutcome::Pass,
-	}
-}
-
-// look at the entirety of the object at the given key, recursively
-fn mask_all(value: &mut Value, key: &str, rules: &RegexRules) -> VisitOutcome {
-	match value.get_mut(key) {
-		Some(child) => walk(child, rules),
-		None => VisitOutcome::Pass,
-	}
-}
-
-// look at each element of the array at the given key,
-// used when a specific shape is expected for each element
-fn mask_array(
-	value: &mut Value,
-	key: &str,
-	mut f: impl FnMut(&mut Value) -> VisitOutcome,
-) -> VisitOutcome {
-	match value.get_mut(key).and_then(Value::as_array_mut) {
-		Some(items) => each(items, |item| f(item)),
-		None => VisitOutcome::Pass,
-	}
-}
-
 fn mask_string(text: &mut String, rules: &RegexRules) -> VisitOutcome {
 	match inspect(text, rules) {
 		TextDecision::Pass => VisitOutcome::Pass,
@@ -202,49 +93,6 @@ fn mask_string(text: &mut String, rules: &RegexRules) -> VisitOutcome {
 		},
 		TextDecision::Reject => VisitOutcome::Rejected,
 	}
-}
-
-fn mask_content_block(block: &mut Value, rules: &RegexRules) -> VisitOutcome {
-	match block.get("type").and_then(Value::as_str) {
-		Some("text") => mask_field(block, "text", rules),
-		Some("resource") => match block.get_mut("resource") {
-			Some(resource) => {
-				mask_field(resource, "text", rules).then(|| match resource.get_mut("resource") {
-					Some(contents) => mask_field(contents, "text", rules),
-					None => VisitOutcome::Pass,
-				})
-			},
-			None => VisitOutcome::Pass,
-		},
-		Some("resource_link") => each(["name", "title", "description"], |key| {
-			mask_field(block, key, rules)
-		}),
-		_ => VisitOutcome::Pass,
-	}
-}
-
-// drop_matching removes entries rather than mutating masking.
-// this is a conservative way to avoid mutating things like identifiers and schema that
-// the client/agent would rely on for subsequent calls, for example:
-// tools/list -> modify get_ssn to get_<masked> -> tools/call get_<masked> -> error because tool not found
-fn drop_matching(value: &mut Value, list_key: &str, rules: &RegexRules) -> VisitOutcome {
-	let Some(entries) = value.get_mut(list_key).and_then(Value::as_array_mut) else {
-		return VisitOutcome::Pass;
-	};
-
-	let mut outcome = VisitOutcome::Pass;
-	entries.retain_mut(|entry| match walk(entry, rules) {
-		VisitOutcome::Pass => true,
-		VisitOutcome::Mutated => {
-			outcome = outcome.merge(VisitOutcome::Mutated);
-			false
-		},
-		VisitOutcome::Rejected => {
-			outcome = VisitOutcome::Rejected;
-			false
-		},
-	});
-	outcome
 }
 
 fn reserialize<P: DeserializeOwned>(value: &Value) -> Option<(P, Bytes)> {
