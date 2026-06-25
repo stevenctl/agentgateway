@@ -33,7 +33,6 @@ impl McpGuardrailsDynamicMetadata {
 	}
 }
 
-mod adapter;
 mod client;
 pub mod methods;
 mod payload;
@@ -247,14 +246,7 @@ impl Processor {
 				.await
 			},
 			ProcessorKind::Regex(rp) => {
-				regex::run_request::<P>(
-					rp,
-					ctx.method,
-					ctx.params.as_mut(),
-					req_ctx.headers(),
-					client,
-				)
-				.await
+				regex::run_request::<P>(rp, ctx.method, ctx.params.as_mut()).await
 			},
 		}
 	}
@@ -271,9 +263,7 @@ impl Processor {
 			ProcessorKind::Remote(remote) => {
 				client::check_response(remote, method, backends, body, req_ctx, client).await
 			},
-			ProcessorKind::Regex(rp) => {
-				regex::run_response(rp, method, body, req_ctx.headers(), client).await
-			},
+			ProcessorKind::Regex(rp) => regex::run_response(rp, method, body).await,
 		}
 	}
 }

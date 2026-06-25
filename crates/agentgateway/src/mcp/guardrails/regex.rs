@@ -1,18 +1,16 @@
 //! The regex/PII MCP guardrail variant.
 //!
-//! Thin glue over the shared adapter: build the matching LLM `RequestGuard` /
-//! `ResponseGuard` from config and let [`super::adapter`] run it through the LLM
-//! regex driver — including list responses, which the adapter filters per-entry.
+//! Regexes run directly over the MCP JSON payload. This avoids materializing the
+//! payload as synthetic LLM messages while sharing the existing regex semantics.
 
 use bytes::Bytes;
-use rmcp::model::ServerResult;
+use rmcp::model::{ErrorCode, ErrorData, ServerResult};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
-use super::{FailureMode, McpRejection, Outcome, adapter};
-use crate::llm::policy::{
-	RegexRules, RequestGuard, RequestGuardKind, RequestRejection, ResponseGuard, ResponseGuardKind,
-};
-use crate::proxy::httpproxy::PolicyClient;
+use super::payload::{self, TextDecision, VisitOutcome};
+use super::{FailureMode, McpRejection, Outcome};
+use crate::llm::policy::{Policy, RegexResult, RegexRules};
 use crate::*;
 
 #[apply(schema!)]
@@ -27,59 +25,101 @@ pub struct RegexProcessor {
 	pub failure_mode: FailureMode,
 }
 
-impl RegexProcessor {
-	fn request_guard(&self) -> RequestGuard {
-		RequestGuard {
-			rejection: RequestRejection::default(),
-			kind: RequestGuardKind::Regex(self.rules.clone()),
-		}
-	}
-
-	fn response_guard(&self) -> ResponseGuard {
-		ResponseGuard {
-			rejection: RequestRejection::default(),
-			kind: ResponseGuardKind::Regex(self.rules.clone()),
-		}
-	}
-}
-
 pub(crate) async fn run_request<P: DeserializeOwned>(
 	rp: &RegexProcessor,
 	method: &str,
 	params: Option<&mut Bytes>,
-	headers: &::http::HeaderMap,
-	client: &PolicyClient,
 ) -> Outcome<P> {
-	adapter::run_request_guard::<P>(
-		&rp.request_guard(),
-		method,
-		params,
-		&rp.rejection.to_error(),
-		rp.failure_mode,
-		headers,
-		client,
-		None,
-	)
-	.await
+	if !payload::supports_request(method) {
+		return Outcome::Pass;
+	}
+	let Some(body) = params else {
+		return Outcome::Pass;
+	};
+	let mut value = match serde_json::from_slice::<Value>(body) {
+		Ok(value) => value,
+		Err(error) => {
+			return on_error(rp.failure_mode, method, &format!("decode params: {error}"));
+		},
+	};
+	let outcome = payload::visit_request(method, &mut value, &mut |text| inspect(rp, text));
+	finish::<P>(rp, method, body, value, outcome, "re-encode masked params")
 }
 
 pub(crate) async fn run_response(
 	rp: &RegexProcessor,
 	method: &str,
 	body: &mut Bytes,
-	headers: &::http::HeaderMap,
-	client: &PolicyClient,
 ) -> Outcome<ServerResult> {
-	adapter::run_response_guard(
-		&rp.response_guard(),
-		method,
-		body,
-		&rp.rejection.to_error(),
-		rp.failure_mode,
-		headers,
-		client,
-	)
-	.await
+	if !payload::supports_response(method) {
+		return Outcome::Pass;
+	}
+	let mut value = match serde_json::from_slice::<Value>(body) {
+		Ok(value) => value,
+		Err(error) => {
+			return on_error(rp.failure_mode, method, &format!("decode result: {error}"));
+		},
+	};
+	let outcome = if payload::is_list_response(method) {
+		payload::filter_list_entries(method, &mut value, &mut |text| inspect(rp, text))
+	} else {
+		payload::visit_response(method, &mut value, &mut |text| inspect(rp, text))
+	};
+	finish::<ServerResult>(rp, method, body, value, outcome, "re-encode masked result")
+}
+
+fn inspect(rp: &RegexProcessor, text: &str) -> TextDecision {
+	match Policy::apply_prompt_guard_regex(text, &rp.rules) {
+		None => TextDecision::Pass,
+		Some(RegexResult::Mask(replacement)) => TextDecision::Replace(replacement),
+		Some(RegexResult::Reject) => TextDecision::Reject,
+	}
+}
+
+fn finish<P: DeserializeOwned>(
+	rp: &RegexProcessor,
+	method: &str,
+	body: &mut Bytes,
+	value: Value,
+	outcome: VisitOutcome,
+	encode_error: &str,
+) -> Outcome<P> {
+	match outcome {
+		VisitOutcome::Pass => Outcome::Pass,
+		VisitOutcome::Rejected => Outcome::Reject(rp.rejection.to_error()),
+		VisitOutcome::Mutated => match reserialize::<P>(&value) {
+			Some((parsed, bytes)) => {
+				*body = bytes;
+				Outcome::Mutated(parsed)
+			},
+			None => on_error(rp.failure_mode, method, encode_error),
+		},
+	}
+}
+
+fn reserialize<P: DeserializeOwned>(value: &Value) -> Option<(P, Bytes)> {
+	let bytes: Bytes = serde_json::to_vec(value).ok()?.into();
+	let parsed = serde_json::from_slice::<P>(&bytes)
+		.inspect_err(|error| tracing::warn!(%error, "mcpGuardrails: re-encode failed to parse"))
+		.ok()?;
+	Some((parsed, bytes))
+}
+
+fn on_error<T>(failure_mode: FailureMode, method: &str, reason: &str) -> Outcome<T> {
+	match failure_mode {
+		FailureMode::FailOpen => {
+			tracing::warn!(method, reason, "mcpGuardrails: processor failing open");
+			Outcome::Pass
+		},
+		FailureMode::FailClosed => {
+			tracing::warn!(method, reason, "mcpGuardrails: processor failing closed");
+			Outcome::Reject(ErrorData::new(
+				ErrorCode::INTERNAL_ERROR,
+				"mcpGuardrails processor error",
+				None,
+			))
+		},
+	}
 }
 
 #[cfg(test)]
@@ -90,20 +130,6 @@ mod tests {
 	use super::*;
 	use crate::llm::policy::{Action, RegexRule};
 	use crate::mcp::guardrails::{client, methods};
-
-	// Regex guards never touch the PolicyClient or headers, but the adapter
-	// signature requires them.
-	fn test_client() -> PolicyClient {
-		PolicyClient::new(
-			crate::test_helpers::proxymock::setup_proxy_test("{}")
-				.unwrap()
-				.pi,
-		)
-	}
-
-	fn headers() -> ::http::HeaderMap {
-		::http::HeaderMap::new()
-	}
 
 	fn processor(action: Action, patterns: &[&str]) -> RegexProcessor {
 		RegexProcessor {
@@ -139,11 +165,11 @@ mod tests {
 		method: &str,
 		params: Option<&mut Bytes>,
 	) -> Outcome<P> {
-		run_request::<P>(rp, method, params, &headers(), &test_client()).await
+		run_request::<P>(rp, method, params).await
 	}
 
 	async fn resp(rp: &RegexProcessor, method: &str, body: &mut Bytes) -> Outcome<ServerResult> {
-		run_response(rp, method, body, &headers(), &test_client()).await
+		run_response(rp, method, body).await
 	}
 
 	#[test]

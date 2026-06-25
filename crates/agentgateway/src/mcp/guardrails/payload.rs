@@ -1,36 +1,30 @@
-//! Method-aware MCP payload traversal, decoupled from the guardrail that decides
-//! verdicts. Non-list methods are flattened to a list of editable [`TextSlot`]s
-//! (text + location); a driver runs over the slot texts (via the adapter in
-//! [`super::adapter`]) and any rewrites are spliced back with [`apply_replacements`].
-//!
-//! List responses (`*/list`) flatten to [`EntrySlot`]s instead: every entry's
-//! name/title/description is scanned by the same driver, and any entry the driver
-//! rewrites or rejects is dropped via [`drop_list_entries`].
-
-use std::collections::HashSet;
+//! Method-aware MCP payload traversal for in-place text inspection.
 
 use serde_json::Value;
 
 use super::methods;
 
-/// An editable text leaf and where it lives in the JSON document.
-pub(crate) struct TextSlot {
-	pub location: Vec<PathSeg>,
-	pub text: String,
+pub(crate) enum TextDecision {
+	Pass,
+	Replace(String),
+	Reject,
 }
 
-/// A text field of a `*/list` entry, tagged with the entry's array index so a
-/// driver hit on any of an entry's fields can drop the whole entry.
-pub(crate) struct EntrySlot {
-	pub entry: usize,
-	pub text: String,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VisitOutcome {
+	Pass,
+	Mutated,
+	Rejected,
 }
 
-#[derive(Clone)]
-pub(crate) enum PathSeg {
-	Key(&'static str),
-	OwnedKey(String),
-	Index(usize),
+impl VisitOutcome {
+	fn merge(self, other: Self) -> Self {
+		match (self, other) {
+			(Self::Rejected, _) | (_, Self::Rejected) => Self::Rejected,
+			(Self::Mutated, _) | (_, Self::Mutated) => Self::Mutated,
+			_ => Self::Pass,
+		}
+	}
 }
 
 pub(crate) fn supports_request(method: &str) -> bool {
@@ -53,8 +47,6 @@ pub(crate) fn supports_response(method: &str) -> bool {
 	)
 }
 
-/// Whether the response for `method` is a fanout list filtered per-entry rather
-/// than flattened to slots.
 pub(crate) fn is_list_response(method: &str) -> bool {
 	list_field(method).is_some()
 }
@@ -69,242 +61,214 @@ fn list_field(method: &str) -> Option<&'static str> {
 	}
 }
 
-/// Flatten the editable text in a request body (non-list methods only).
-pub(crate) fn extract_request(method: &str, params: &Value) -> Vec<TextSlot> {
-	let mut c = Collector { slots: Vec::new() };
-	c.request(method, params);
-	c.slots
-}
-
-/// Flatten the editable text in a response body. List methods produce no slots
-/// here — use [`extract_list_entries`] for those.
-pub(crate) fn extract_response(method: &str, result: &Value) -> Vec<TextSlot> {
-	let mut c = Collector { slots: Vec::new() };
-	c.response(method, result);
-	c.slots
-}
-
-struct Collector {
-	slots: Vec<TextSlot>,
-}
-
-impl Collector {
-	fn request(&mut self, method: &str, params: &Value) {
-		match method {
-			methods::TOOLS_CALL | methods::PROMPTS_GET => {
-				if let Some(args) = params.get("arguments") {
-					self.walk(args, &PathNode::Root.key("arguments"));
-				}
-			},
-			methods::RESOURCES_READ => self.field(params, "uri", &PathNode::Root),
-			_ => {},
-		}
+pub(crate) fn visit_request(
+	method: &str,
+	params: &mut Value,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	match method {
+		methods::TOOLS_CALL | methods::PROMPTS_GET => params
+			.get_mut("arguments")
+			.map(|arguments| walk(arguments, visit))
+			.unwrap_or(VisitOutcome::Pass),
+		methods::RESOURCES_READ => field(params, "uri", visit),
+		_ => VisitOutcome::Pass,
 	}
+}
 
-	fn response(&mut self, method: &str, result: &Value) {
-		let root = PathNode::Root;
-		match method {
-			methods::TOOLS_CALL => {
-				let content = root.key("content");
-				for (i, item) in content_array_iter(result, "content") {
-					self.content_block(item, &content.index(i));
+pub(crate) fn visit_response(
+	method: &str,
+	result: &mut Value,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	match method {
+		methods::TOOLS_CALL => {
+			let mut outcome = content_array(result, "content", visit);
+			if outcome != VisitOutcome::Rejected {
+				if let Some(structured) = result.get_mut("structuredContent") {
+					outcome = outcome.merge(walk(structured, visit));
 				}
-				if let Some(sc) = result.get("structuredContent") {
-					self.walk(sc, &root.key("structuredContent"));
-				}
-			},
-			methods::RESOURCES_READ => {
-				let contents = root.key("contents");
-				for (i, item) in content_array_iter(result, "contents") {
-					self.field(item, "text", &contents.index(i));
-				}
-			},
-			methods::PROMPTS_GET => {
-				self.field(result, "description", &root);
-				let messages = root.key("messages");
-				for (i, m) in content_array_iter(result, "messages") {
-					if let Some(content) = m.get("content") {
-						self.content_block(content, &messages.index(i).key("content"));
+			}
+			outcome
+		},
+		methods::RESOURCES_READ => array_fields(result, "contents", "text", visit),
+		methods::PROMPTS_GET => {
+			let mut outcome = field(result, "description", visit);
+			if outcome != VisitOutcome::Rejected {
+				if let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) {
+					for message in messages {
+						let Some(content) = message.get_mut("content") else {
+							continue;
+						};
+						outcome = outcome.merge(content_block(content, visit));
+						if outcome == VisitOutcome::Rejected {
+							break;
+						}
 					}
 				}
-			},
-			// `*/list` is handled by `extract_list_entries` + `drop_list_entries`.
-			_ => {},
-		}
-	}
-
-	fn push(&mut self, text: &str, node: &PathNode) {
-		self.slots.push(TextSlot {
-			location: node.to_path(),
-			text: text.to_string(),
-		});
-	}
-
-	fn field(&mut self, obj: &Value, key: &'static str, node: &PathNode) {
-		if let Some(Value::String(s)) = obj.get(key) {
-			self.push(s, &node.key(key));
-		}
-	}
-
-	fn walk(&mut self, value: &Value, node: &PathNode) {
-		match value {
-			Value::String(s) => self.push(s, node),
-			Value::Object(map) => {
-				for (k, v) in map {
-					self.walk(v, &node.borrowed_key(k));
-				}
-			},
-			Value::Array(arr) => {
-				for (i, v) in arr.iter().enumerate() {
-					self.walk(v, &node.index(i));
-				}
-			},
-			_ => {},
-		}
-	}
-
-	fn content_block(&mut self, block: &Value, base: &PathNode) {
-		match block.get("type").and_then(Value::as_str) {
-			Some("text") => self.field(block, "text", base),
-			Some("resource") => {
-				if let Some(res) = block.get("resource") {
-					self.field(res, "text", &base.key("resource"));
-					if let Some(contents) = res.get("resource") {
-						self.field(contents, "text", &base.key("resource").key("resource"));
-					}
-				}
-			},
-			Some("resource_link") => {
-				for key in ["name", "title", "description"] {
-					self.field(block, key, base);
-				}
-			},
-			_ => {},
-		}
+			}
+			outcome
+		},
+		_ => VisitOutcome::Pass,
 	}
 }
 
-/// Flatten the non-empty name/title/description of every `*/list` entry, each
-/// tagged with its entry index.
-pub(crate) fn extract_list_entries(method: &str, result: &Value) -> Vec<EntrySlot> {
-	let Some(field) = list_field(method) else {
-		return Vec::new();
+/// Drop list entries for which any inspected field would be rewritten. A rejection
+/// still rejects the entire response.
+pub(crate) fn filter_list_entries(
+	method: &str,
+	result: &mut Value,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	let Some(field_name) = list_field(method) else {
+		return VisitOutcome::Pass;
 	};
-	let Some(entries) = result.get(field).and_then(Value::as_array) else {
-		return Vec::new();
+	let Some(entries) = result.get_mut(field_name).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
 	};
-	let mut slots = Vec::new();
-	for (entry, item) in entries.iter().enumerate() {
+
+	let mut drop = vec![false; entries.len()];
+	for (index, entry) in entries.iter().enumerate() {
 		for key in ["name", "title", "description"] {
-			if let Some(Value::String(s)) = item.get(key) {
-				if !s.is_empty() {
-					slots.push(EntrySlot {
-						entry,
-						text: s.clone(),
-					});
-				}
+			let Some(text) = entry.get(key).and_then(Value::as_str) else {
+				continue;
+			};
+			match visit(text) {
+				TextDecision::Pass => {},
+				TextDecision::Replace(_) => {
+					drop[index] = true;
+					break;
+				},
+				TextDecision::Reject => return VisitOutcome::Rejected,
 			}
 		}
 	}
-	slots
-}
 
-/// Remove the given entry indices from a `*/list` array in a single pass.
-pub(crate) fn drop_list_entries(method: &str, result: &mut Value, drop: &HashSet<usize>) {
-	let Some(field) = list_field(method) else {
-		return;
-	};
-	let Some(arr) = result.get_mut(field).and_then(Value::as_array_mut) else {
-		return;
-	};
+	if !drop.iter().any(|drop| *drop) {
+		return VisitOutcome::Pass;
+	}
 	let mut index = 0;
-	arr.retain(|_| {
-		let keep = !drop.contains(&index);
+	entries.retain(|_| {
+		let keep = !drop[index];
 		index += 1;
 		keep
 	});
+	VisitOutcome::Mutated
 }
 
-fn content_array_iter<'a>(obj: &'a Value, field: &str) -> impl Iterator<Item = (usize, &'a Value)> {
-	obj
-		.get(field)
-		.and_then(Value::as_array)
-		.into_iter()
-		.flat_map(|a| a.iter().enumerate())
+fn apply(text: &mut String, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+	match visit(text) {
+		TextDecision::Pass => VisitOutcome::Pass,
+		TextDecision::Replace(replacement) if replacement == *text => VisitOutcome::Pass,
+		TextDecision::Replace(replacement) => {
+			*text = replacement;
+			VisitOutcome::Mutated
+		},
+		TextDecision::Reject => VisitOutcome::Rejected,
+	}
 }
 
-/// Splice rewritten leaf texts back into `value` at their recorded locations.
-pub(crate) fn apply_replacements(value: &mut Value, replacements: Vec<(Vec<PathSeg>, String)>) {
-	for (path, new) in replacements {
-		if let Some(slot) = navigate_mut(value, &path) {
-			*slot = Value::String(new);
+fn field(
+	value: &mut Value,
+	key: &str,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	match value.get_mut(key) {
+		Some(Value::String(text)) => apply(text, visit),
+		_ => VisitOutcome::Pass,
+	}
+}
+
+fn walk(value: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+	match value {
+		Value::String(text) => apply(text, visit),
+		Value::Array(values) => {
+			let mut outcome = VisitOutcome::Pass;
+			for value in values {
+				outcome = outcome.merge(walk(value, visit));
+				if outcome == VisitOutcome::Rejected {
+					break;
+				}
+			}
+			outcome
+		},
+		Value::Object(values) => {
+			let mut outcome = VisitOutcome::Pass;
+			for value in values.values_mut() {
+				outcome = outcome.merge(walk(value, visit));
+				if outcome == VisitOutcome::Rejected {
+					break;
+				}
+			}
+			outcome
+		},
+		_ => VisitOutcome::Pass,
+	}
+}
+
+fn content_array(
+	result: &mut Value,
+	field_name: &str,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	let Some(contents) = result.get_mut(field_name).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
+	};
+	let mut outcome = VisitOutcome::Pass;
+	for content in contents {
+		outcome = outcome.merge(content_block(content, visit));
+		if outcome == VisitOutcome::Rejected {
+			break;
 		}
 	}
+	outcome
 }
 
-fn navigate_mut<'v>(root: &'v mut Value, path: &[PathSeg]) -> Option<&'v mut Value> {
-	let mut cur = root;
-	for seg in path {
-		cur = match seg {
-			PathSeg::Key(k) => cur.get_mut(*k)?,
-			PathSeg::OwnedKey(k) => cur.get_mut(k)?,
-			PathSeg::Index(i) => cur.get_mut(*i)?,
-		};
+fn array_fields(
+	result: &mut Value,
+	array_name: &str,
+	field_name: &str,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	let Some(values) = result.get_mut(array_name).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
+	};
+	let mut outcome = VisitOutcome::Pass;
+	for value in values {
+		outcome = outcome.merge(field(value, field_name, visit));
+		if outcome == VisitOutcome::Rejected {
+			break;
+		}
 	}
-	Some(cur)
+	outcome
 }
 
-enum PathNode<'a> {
-	Root,
-	Child {
-		parent: &'a PathNode<'a>,
-		step: Step<'a>,
-	},
-}
-
-enum Step<'a> {
-	Key(&'static str),
-	BorrowedKey(&'a str),
-	Index(usize),
-}
-
-impl<'a> PathNode<'a> {
-	fn key(&'a self, key: &'static str) -> PathNode<'a> {
-		PathNode::Child {
-			parent: self,
-			step: Step::Key(key),
-		}
-	}
-
-	fn borrowed_key(&'a self, key: &'a str) -> PathNode<'a> {
-		PathNode::Child {
-			parent: self,
-			step: Step::BorrowedKey(key),
-		}
-	}
-
-	fn index(&'a self, index: usize) -> PathNode<'a> {
-		PathNode::Child {
-			parent: self,
-			step: Step::Index(index),
-		}
-	}
-
-	fn to_path(&self) -> Vec<PathSeg> {
-		let mut out = Vec::new();
-		self.write(&mut out);
-		out
-	}
-
-	fn write(&self, out: &mut Vec<PathSeg>) {
-		if let PathNode::Child { parent, step } = self {
-			parent.write(out);
-			out.push(match step {
-				Step::Key(k) => PathSeg::Key(k),
-				Step::BorrowedKey(k) => PathSeg::OwnedKey(k.to_string()),
-				Step::Index(i) => PathSeg::Index(*i),
-			});
-		}
+fn content_block(block: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+	match block.get("type").and_then(Value::as_str) {
+		Some("text") => field(block, "text", visit),
+		Some("resource") => {
+			let Some(resource) = block.get_mut("resource") else {
+				return VisitOutcome::Pass;
+			};
+			let mut outcome = field(resource, "text", visit);
+			if outcome != VisitOutcome::Rejected {
+				if let Some(contents) = resource.get_mut("resource") {
+					outcome = outcome.merge(field(contents, "text", visit));
+				}
+			}
+			outcome
+		},
+		Some("resource_link") => {
+			let mut outcome = VisitOutcome::Pass;
+			for key in ["name", "title", "description"] {
+				outcome = outcome.merge(field(block, key, visit));
+				if outcome == VisitOutcome::Rejected {
+					break;
+				}
+			}
+			outcome
+		},
+		_ => VisitOutcome::Pass,
 	}
 }
 
@@ -314,108 +278,109 @@ mod tests {
 
 	use super::*;
 
-	fn texts(slots: &[TextSlot]) -> Vec<String> {
-		let mut v: Vec<String> = slots.iter().map(|s| s.text.clone()).collect();
-		v.sort_unstable();
-		v
+	fn replace_secret(text: &str) -> TextDecision {
+		if text.contains("secret") {
+			TextDecision::Replace(text.replace("secret", "<masked>"))
+		} else {
+			TextDecision::Pass
+		}
 	}
 
 	#[test]
-	fn request_tools_call_walks_arguments() {
-		let params = json!({"name": "echo", "arguments": {"note": "hi", "n": 3, "nested": {"k": "v"}}});
+	fn request_tools_call_rewrites_nested_arguments() {
+		let mut params = json!({
+			"name": "echo",
+			"arguments": {"note": "secret", "nested": {"value": "another secret"}}
+		});
 		assert_eq!(
-			texts(&extract_request(methods::TOOLS_CALL, &params)),
-			vec!["hi", "v"]
+			visit_request(methods::TOOLS_CALL, &mut params, &mut replace_secret),
+			VisitOutcome::Mutated
+		);
+		assert_eq!(params["arguments"]["note"], json!("<masked>"));
+		assert_eq!(
+			params["arguments"]["nested"]["value"],
+			json!("another <masked>")
 		);
 	}
 
 	#[test]
-	fn request_resources_read_uri() {
-		let params = json!({"uri": "file:///secret"});
-		assert_eq!(
-			texts(&extract_request(methods::RESOURCES_READ, &params)),
-			vec!["file:///secret"]
-		);
-	}
-
-	#[test]
-	fn response_tools_call_scans_text_resource_and_link() {
-		let result = json!({
+	fn response_tools_call_rewrites_supported_content() {
+		let mut result = json!({
 			"content": [
-				{"type": "text", "text": "leak"},
-				{"type": "image", "data": "AAAA", "mimeType": "image/png"},
-				{"type": "resource", "resource": {"uri": "file://x", "text": "embedded leak"}},
-				{"type": "resource", "resource": {"uri": "file://y", "blob": "AAAA"}},
-				{"type": "resource_link", "uri": "file://z", "name": "linkname", "description": "linkdesc"},
+				{"type": "text", "text": "secret"},
+				{"type": "image", "data": "secret", "mimeType": "image/png"},
+				{"type": "resource", "resource": {"uri": "file://x", "text": "embedded secret"}},
+				{"type": "resource_link", "uri": "file://z", "name": "secret link"},
 			],
-			"structuredContent": {"field": "deep"},
+			"structuredContent": {"field": "deep secret"},
 		});
 		assert_eq!(
-			texts(&extract_response(methods::TOOLS_CALL, &result)),
-			vec!["deep", "embedded leak", "leak", "linkdesc", "linkname"]
+			visit_response(methods::TOOLS_CALL, &mut result, &mut replace_secret),
+			VisitOutcome::Mutated
 		);
+		assert_eq!(result["content"][0]["text"], json!("<masked>"));
+		assert_eq!(result["content"][1]["data"], json!("secret"));
+		assert_eq!(
+			result["content"][2]["resource"]["text"],
+			json!("embedded <masked>")
+		);
+		assert_eq!(result["content"][3]["name"], json!("<masked> link"));
+		assert_eq!(result["structuredContent"]["field"], json!("deep <masked>"));
 	}
 
 	#[test]
-	fn response_prompts_get_scans_embedded_resource() {
-		let result = json!({
-			"description": "top-level leak",
-			"messages": [
-				{"role": "user", "content": {"type": "text", "text": "plain"}},
-				{"role": "user", "content": {
+	fn response_prompts_get_rewrites_description_and_resource() {
+		let mut result = json!({
+			"description": "secret prompt",
+			"messages": [{
+				"role": "user",
+				"content": {
 					"type": "resource",
-					"resource": {"resource": {"uri": "u", "text": "res leak"}}
-				}},
-			],
+					"resource": {"resource": {"uri": "u", "text": "secret resource"}}
+				}
+			}],
 		});
 		assert_eq!(
-			texts(&extract_response(methods::PROMPTS_GET, &result)),
-			vec!["plain", "res leak", "top-level leak"]
+			visit_response(methods::PROMPTS_GET, &mut result, &mut replace_secret),
+			VisitOutcome::Mutated
 		);
-	}
-
-	#[test]
-	fn list_methods_produce_no_flat_slots() {
-		let result = json!({"tools": [{"name": "a", "description": "does a"}]});
-		assert!(extract_response(methods::TOOLS_LIST, &result).is_empty());
-	}
-
-	#[test]
-	fn apply_replacements_rewrites_nested_path() {
-		let mut result = json!({"content": [], "structuredContent": {"a": {"b": "secret"}}});
-		let slots = extract_response(methods::TOOLS_CALL, &result);
-		let slot = slots
-			.into_iter()
-			.find(|s| s.text == "secret")
-			.expect("secret slot");
-		apply_replacements(&mut result, vec![(slot.location, "<m>".to_string())]);
-		assert_eq!(result["structuredContent"]["a"]["b"], json!("<m>"));
-	}
-
-	#[test]
-	fn list_entries_flatten_with_index() {
-		let result = json!({"tools": [
-			{"name": "a", "title": "A title", "description": "does a"},
-			{"name": "b"},
-		]});
-		let slots = extract_list_entries(methods::TOOLS_LIST, &result);
-		let mut got: Vec<(usize, String)> = slots.iter().map(|s| (s.entry, s.text.clone())).collect();
-		got.sort();
+		assert_eq!(result["description"], json!("<masked> prompt"));
 		assert_eq!(
-			got,
-			vec![
-				(0, "A title".to_string()),
-				(0, "a".to_string()),
-				(0, "does a".to_string()),
-				(1, "b".to_string()),
-			]
+			result["messages"][0]["content"]["resource"]["resource"]["text"],
+			json!("<masked> resource")
 		);
 	}
 
 	#[test]
-	fn drop_list_entries_high_index_first() {
-		let mut result = json!({"tools": [{"name": "a"}, {"name": "b"}, {"name": "c"}]});
-		drop_list_entries(methods::TOOLS_LIST, &mut result, &HashSet::from([0, 2]));
-		assert_eq!(result["tools"], json!([{"name": "b"}]));
+	fn list_entries_with_matches_are_dropped() {
+		let mut result = json!({"tools": [
+			{"name": "safe", "description": "ok"},
+			{"name": "secret_tool", "description": "not returned"},
+			{"name": "also-safe", "description": "contains secret"},
+		]});
+		assert_eq!(
+			filter_list_entries(methods::TOOLS_LIST, &mut result, &mut replace_secret),
+			VisitOutcome::Mutated
+		);
+		assert_eq!(
+			result["tools"],
+			json!([{"name": "safe", "description": "ok"}])
+		);
+	}
+
+	#[test]
+	fn rejection_short_circuits() {
+		let mut params = json!({"arguments": {"first": "reject", "second": "secret"}});
+		let mut reject = |text: &str| {
+			if text == "reject" {
+				TextDecision::Reject
+			} else {
+				replace_secret(text)
+			}
+		};
+		assert_eq!(
+			visit_request(methods::TOOLS_CALL, &mut params, &mut reject),
+			VisitOutcome::Rejected
+		);
 	}
 }
