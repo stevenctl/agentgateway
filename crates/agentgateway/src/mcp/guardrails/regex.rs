@@ -1,8 +1,3 @@
-//! The regex/PII MCP guardrail variant.
-//!
-//! Regexes run directly over the MCP JSON payload. This avoids materializing the
-//! payload as synthetic LLM messages while sharing the existing regex semantics.
-
 use bytes::Bytes;
 use rmcp::model::{ErrorCode, ErrorData, ServerResult};
 use serde::de::DeserializeOwned;
@@ -17,18 +12,106 @@ use crate::*;
 pub struct RegexProcessor {
 	#[serde(flatten)]
 	pub rules: RegexRules,
-	/// Error returned to the client when a rule matches under `action: reject`.
 	#[serde(default)]
 	pub rejection: McpRejection,
-	/// Behavior when the body cannot be inspected or re-encoded.
 	#[serde(default)]
 	pub failure_mode: FailureMode,
+}
+
+pub(crate) async fn run_request<P: DeserializeOwned>(
+	rp: &RegexProcessor,
+	method: &str,
+	params: Option<&mut Bytes>,
+) -> Outcome<P> {
+	let Some(body) = params else {
+		return Outcome::Pass;
+	};
+	let rules = &rp.rules;
+	match method {
+		methods::TOOLS_CALL | methods::PROMPTS_GET => edit(rp, method, body, "params", |body| {
+			mask_all(body, "arguments", rules)
+		}),
+		methods::RESOURCES_READ => edit(rp, method, body, "params", |body| {
+			mask_field(body, "uri", rules)
+		}),
+		_ => Outcome::Pass,
+	}
+}
+
+pub(crate) async fn run_response(
+	rp: &RegexProcessor,
+	method: &str,
+	body: &mut Bytes,
+) -> Outcome<ServerResult> {
+	let rules = &rp.rules;
+	match method {
+		methods::TOOLS_LIST => edit(rp, method, body, "result", |b| {
+			drop_matching(b, "tools", rules)
+		}),
+		methods::PROMPTS_LIST => edit(rp, method, body, "result", |b| {
+			drop_matching(b, "prompts", rules)
+		}),
+		methods::RESOURCES_LIST => edit(rp, method, body, "result", |b| {
+			drop_matching(b, "resources", rules)
+		}),
+		methods::RESOURCES_TEMPLATES_LIST => edit(rp, method, body, "result", |b| {
+			drop_matching(b, "resourceTemplates", rules)
+		}),
+		methods::TOOLS_CALL => edit(rp, method, body, "result", |b| {
+			mask_array(b, "content", |c| mask_content_block(c, rules))
+				.then(|| mask_all(b, "structuredContent", rules))
+		}),
+		methods::RESOURCES_READ => edit(rp, method, body, "result", |b| {
+			mask_array(b, "contents", |v| mask_field(v, "text", rules))
+		}),
+		methods::PROMPTS_GET => edit(rp, method, body, "result", |b| {
+			mask_field(b, "description", rules).then(|| {
+				mask_array(b, "messages", |msg| match msg.get_mut("content") {
+					Some(content) => mask_content_block(content, rules),
+					None => VisitOutcome::Pass,
+				})
+			})
+		}),
+		_ => Outcome::Pass,
+	}
+}
+
+fn edit<P: DeserializeOwned>(
+	rp: &RegexProcessor,
+	method: &str,
+	body: &mut Bytes,
+	what: &str,
+	visit: impl FnOnce(&mut Value) -> VisitOutcome,
+) -> Outcome<P> {
+	let mut value = match serde_json::from_slice::<Value>(body) {
+		Ok(value) => value,
+		Err(error) => return on_error(rp.failure_mode, method, &format!("decode {what}: {error}")),
+	};
+	match visit(&mut value) {
+		VisitOutcome::Pass => Outcome::Pass,
+		VisitOutcome::Rejected => Outcome::Reject(rp.rejection.to_error()),
+		VisitOutcome::Mutated => match reserialize::<P>(&value) {
+			Some((parsed, bytes)) => {
+				*body = bytes;
+				Outcome::Mutated(parsed)
+			},
+			None => on_error(rp.failure_mode, method, &format!("re-encode masked {what}")),
+		},
+	}
 }
 
 enum TextDecision {
 	Pass,
 	Replace(String),
 	Reject,
+}
+
+fn inspect(text: &str, rules: &RegexRules) -> TextDecision {
+	match Policy::apply_prompt_guard_regex(text, rules) {
+		None => TextDecision::Pass,
+		Some(RegexResult::Mask(replacement)) => TextDecision::Replace(replacement),
+		Some(RegexResult::Reject) => TextDecision::Reject,
+	}
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -47,18 +130,19 @@ impl VisitOutcome {
 		}
 	}
 
-	/// Merge in `next` unless already rejected (which short-circuits).
 	fn then(self, next: impl FnOnce() -> Self) -> Self {
 		if self == Self::Rejected {
-			self
+			self // alredy rejected, short-circuit
 		} else {
 			self.merge(next())
 		}
 	}
 }
 
-/// Fold `f` over `items`, short-circuiting on the first Rejected.
-fn each<T>(items: impl IntoIterator<Item = T>, mut f: impl FnMut(T) -> VisitOutcome) -> VisitOutcome {
+fn each<T>(
+	items: impl IntoIterator<Item = T>,
+	mut f: impl FnMut(T) -> VisitOutcome,
+) -> VisitOutcome {
 	let mut outcome = VisitOutcome::Pass;
 	for item in items {
 		outcome = outcome.merge(f(item));
@@ -69,178 +153,47 @@ fn each<T>(items: impl IntoIterator<Item = T>, mut f: impl FnMut(T) -> VisitOutc
 	outcome
 }
 
-/// Fold `f` over an array-valued field; Pass if missing or not an array.
-fn array(
-	value: &mut Value,
-	key: &str,
-	f: impl FnMut(&mut Value) -> VisitOutcome,
-) -> VisitOutcome {
-	match value.get_mut(key).and_then(Value::as_array_mut) {
-		Some(items) => each(items, f),
+fn walk(value: &mut Value, rules: &RegexRules) -> VisitOutcome {
+	match value {
+		// TODO we need to look at non-string fields too probably
+		Value::String(text) => mask_string(text, rules),
+		Value::Array(values) => each(values, |v| walk(v, rules)),
+		Value::Object(values) => each(values.values_mut(), |v| walk(v, rules)),
+		_ => VisitOutcome::Pass,
+	}
+}
+
+// look at a specific field by name
+fn mask_field(value: &mut Value, key: &str, rules: &RegexRules) -> VisitOutcome {
+	match value.get_mut(key) {
+		Some(Value::String(text)) => mask_string(text, rules),
+		_ => VisitOutcome::Pass,
+	}
+}
+
+// look at the entirety of the object at the given key, recursively
+fn mask_all(value: &mut Value, key: &str, rules: &RegexRules) -> VisitOutcome {
+	match value.get_mut(key) {
+		Some(child) => walk(child, rules),
 		None => VisitOutcome::Pass,
 	}
 }
 
-pub(crate) async fn run_request<P: DeserializeOwned>(
-	rp: &RegexProcessor,
-	method: &str,
-	params: Option<&mut Bytes>,
-) -> Outcome<P> {
-	if !supports_request(method) {
-		return Outcome::Pass;
-	}
-	let Some(body) = params else {
-		return Outcome::Pass;
-	};
-	let mut value = match serde_json::from_slice::<Value>(body) {
-		Ok(value) => value,
-		Err(error) => {
-			return on_error(rp.failure_mode, method, &format!("decode params: {error}"));
-		},
-	};
-	let outcome = visit_request(method, &mut value, &mut |text| inspect(rp, text));
-	finish::<P>(rp, method, body, value, outcome, "re-encode masked params")
-}
-
-pub(crate) async fn run_response(
-	rp: &RegexProcessor,
-	method: &str,
-	body: &mut Bytes,
-) -> Outcome<ServerResult> {
-	if !supports_response(method) {
-		return Outcome::Pass;
-	}
-	let mut value = match serde_json::from_slice::<Value>(body) {
-		Ok(value) => value,
-		Err(error) => {
-			return on_error(rp.failure_mode, method, &format!("decode result: {error}"));
-		},
-	};
-	let outcome = if is_list_response(method) {
-		filter_list_entries(method, &mut value, &mut |text| inspect(rp, text))
-	} else {
-		visit_response(method, &mut value, &mut |text| inspect(rp, text))
-	};
-	finish::<ServerResult>(rp, method, body, value, outcome, "re-encode masked result")
-}
-
-fn supports_request(method: &str) -> bool {
-	matches!(
-		method,
-		methods::TOOLS_CALL | methods::PROMPTS_GET | methods::RESOURCES_READ
-	)
-}
-
-fn supports_response(method: &str) -> bool {
-	matches!(
-		method,
-		methods::TOOLS_CALL
-			| methods::PROMPTS_GET
-			| methods::RESOURCES_READ
-			| methods::TOOLS_LIST
-			| methods::PROMPTS_LIST
-			| methods::RESOURCES_LIST
-			| methods::RESOURCES_TEMPLATES_LIST
-	)
-}
-
-fn is_list_response(method: &str) -> bool {
-	list_field(method).is_some()
-}
-
-fn list_field(method: &str) -> Option<&'static str> {
-	match method {
-		methods::TOOLS_LIST => Some("tools"),
-		methods::PROMPTS_LIST => Some("prompts"),
-		methods::RESOURCES_LIST => Some("resources"),
-		methods::RESOURCES_TEMPLATES_LIST => Some("resourceTemplates"),
-		_ => None,
-	}
-}
-
-fn visit_request(
-	method: &str,
-	params: &mut Value,
-	visit: &mut impl FnMut(&str) -> TextDecision,
+// look at each element of the array at the given key,
+// used when a specific shape is expected for each element
+fn mask_array(
+	value: &mut Value,
+	key: &str,
+	mut f: impl FnMut(&mut Value) -> VisitOutcome,
 ) -> VisitOutcome {
-	match method {
-		methods::TOOLS_CALL | methods::PROMPTS_GET => params
-			.get_mut("arguments")
-			.map(|arguments| walk(arguments, visit))
-			.unwrap_or(VisitOutcome::Pass),
-		methods::RESOURCES_READ => field(params, "uri", visit),
-		_ => VisitOutcome::Pass,
+	match value.get_mut(key).and_then(Value::as_array_mut) {
+		Some(items) => each(items, |item| f(item)),
+		None => VisitOutcome::Pass,
 	}
 }
 
-fn visit_response(
-	method: &str,
-	result: &mut Value,
-	visit: &mut impl FnMut(&str) -> TextDecision,
-) -> VisitOutcome {
-	match method {
-		methods::TOOLS_CALL => array(result, "content", |c| content_block(c, visit)).then(|| {
-			match result.get_mut("structuredContent") {
-				Some(structured) => walk(structured, visit),
-				None => VisitOutcome::Pass,
-			}
-		}),
-		methods::RESOURCES_READ => array(result, "contents", |v| field(v, "text", visit)),
-		methods::PROMPTS_GET => field(result, "description", visit).then(|| {
-			array(result, "messages", |message| match message.get_mut("content") {
-				Some(content) => content_block(content, visit),
-				None => VisitOutcome::Pass,
-			})
-		}),
-		_ => VisitOutcome::Pass,
-	}
-}
-
-/// Drop list entries for which any inspected field would be rewritten. A rejection
-/// still rejects the entire response.
-fn filter_list_entries(
-	method: &str,
-	result: &mut Value,
-	visit: &mut impl FnMut(&str) -> TextDecision,
-) -> VisitOutcome {
-	let Some(field_name) = list_field(method) else {
-		return VisitOutcome::Pass;
-	};
-	let Some(entries) = result.get_mut(field_name).and_then(Value::as_array_mut) else {
-		return VisitOutcome::Pass;
-	};
-
-	let mut drop = vec![false; entries.len()];
-	for (index, entry) in entries.iter().enumerate() {
-		for key in ["name", "title", "description"] {
-			let Some(text) = entry.get(key).and_then(Value::as_str) else {
-				continue;
-			};
-			match visit(text) {
-				TextDecision::Pass => {},
-				TextDecision::Replace(_) => {
-					drop[index] = true;
-					break;
-				},
-				TextDecision::Reject => return VisitOutcome::Rejected,
-			}
-		}
-	}
-
-	if !drop.iter().any(|drop| *drop) {
-		return VisitOutcome::Pass;
-	}
-	let mut index = 0;
-	entries.retain(|_| {
-		let keep = !drop[index];
-		index += 1;
-		keep
-	});
-	VisitOutcome::Mutated
-}
-
-fn apply(text: &mut String, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
-	match visit(text) {
+fn mask_string(text: &mut String, rules: &RegexRules) -> VisitOutcome {
+	match inspect(text, rules) {
 		TextDecision::Pass => VisitOutcome::Pass,
 		TextDecision::Replace(replacement) if replacement == *text => VisitOutcome::Pass,
 		TextDecision::Replace(replacement) => {
@@ -251,68 +204,47 @@ fn apply(text: &mut String, visit: &mut impl FnMut(&str) -> TextDecision) -> Vis
 	}
 }
 
-fn field(
-	value: &mut Value,
-	key: &str,
-	visit: &mut impl FnMut(&str) -> TextDecision,
-) -> VisitOutcome {
-	match value.get_mut(key) {
-		Some(Value::String(text)) => apply(text, visit),
-		_ => VisitOutcome::Pass,
-	}
-}
-
-fn walk(value: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
-	match value {
-		Value::String(text) => apply(text, visit),
-		Value::Array(values) => each(values, |value| walk(value, visit)),
-		Value::Object(values) => each(values.values_mut(), |value| walk(value, visit)),
-		_ => VisitOutcome::Pass,
-	}
-}
-
-fn content_block(block: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+fn mask_content_block(block: &mut Value, rules: &RegexRules) -> VisitOutcome {
 	match block.get("type").and_then(Value::as_str) {
-		Some("text") => field(block, "text", visit),
+		Some("text") => mask_field(block, "text", rules),
 		Some("resource") => match block.get_mut("resource") {
-			Some(resource) => field(resource, "text", visit).then(|| match resource.get_mut("resource") {
-				Some(contents) => field(contents, "text", visit),
-				None => VisitOutcome::Pass,
-			}),
+			Some(resource) => {
+				mask_field(resource, "text", rules).then(|| match resource.get_mut("resource") {
+					Some(contents) => mask_field(contents, "text", rules),
+					None => VisitOutcome::Pass,
+				})
+			},
 			None => VisitOutcome::Pass,
 		},
-		Some("resource_link") => each(["name", "title", "description"], |key| field(block, key, visit)),
+		Some("resource_link") => each(["name", "title", "description"], |key| {
+			mask_field(block, key, rules)
+		}),
 		_ => VisitOutcome::Pass,
 	}
 }
 
-fn inspect(rp: &RegexProcessor, text: &str) -> TextDecision {
-	match Policy::apply_prompt_guard_regex(text, &rp.rules) {
-		None => TextDecision::Pass,
-		Some(RegexResult::Mask(replacement)) => TextDecision::Replace(replacement),
-		Some(RegexResult::Reject) => TextDecision::Reject,
-	}
-}
+// drop_matching removes entries rather than mutating masking.
+// this is a conservative way to avoid mutating things like identifiers and schema that
+// the client/agent would rely on for subsequent calls, for example:
+// tools/list -> modify get_ssn to get_<masked> -> tools/call get_<masked> -> error because tool not found
+fn drop_matching(value: &mut Value, list_key: &str, rules: &RegexRules) -> VisitOutcome {
+	let Some(entries) = value.get_mut(list_key).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
+	};
 
-fn finish<P: DeserializeOwned>(
-	rp: &RegexProcessor,
-	method: &str,
-	body: &mut Bytes,
-	value: Value,
-	outcome: VisitOutcome,
-	encode_error: &str,
-) -> Outcome<P> {
-	match outcome {
-		VisitOutcome::Pass => Outcome::Pass,
-		VisitOutcome::Rejected => Outcome::Reject(rp.rejection.to_error()),
-		VisitOutcome::Mutated => match reserialize::<P>(&value) {
-			Some((parsed, bytes)) => {
-				*body = bytes;
-				Outcome::Mutated(parsed)
-			},
-			None => on_error(rp.failure_mode, method, encode_error),
+	let mut outcome = VisitOutcome::Pass;
+	entries.retain_mut(|entry| match walk(entry, rules) {
+		VisitOutcome::Pass => true,
+		VisitOutcome::Mutated => {
+			outcome = outcome.merge(VisitOutcome::Mutated);
+			false
 		},
-	}
+		VisitOutcome::Rejected => {
+			outcome = VisitOutcome::Rejected;
+			false
+		},
+	});
+	outcome
 }
 
 fn reserialize<P: DeserializeOwned>(value: &Value) -> Option<(P, Bytes)> {
@@ -343,7 +275,7 @@ fn on_error<T>(failure_mode: FailureMode, method: &str, reason: &str) -> Outcome
 #[cfg(test)]
 mod tests {
 	use rmcp::model::CallToolRequestParams;
-	use serde_json::{Value, json};
+	use serde_json::{json, Value};
 
 	use super::*;
 	use crate::llm::policy::{Action, RegexRule};
