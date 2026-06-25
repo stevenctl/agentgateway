@@ -8,7 +8,7 @@ use rmcp::model::{ErrorCode, ErrorData, ServerResult};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::payload::{self, TextDecision, VisitOutcome};
+use super::methods;
 use super::{FailureMode, McpRejection, Outcome};
 use crate::llm::policy::{Policy, RegexResult, RegexRules};
 use crate::*;
@@ -25,12 +25,35 @@ pub struct RegexProcessor {
 	pub failure_mode: FailureMode,
 }
 
+enum TextDecision {
+	Pass,
+	Replace(String),
+	Reject,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum VisitOutcome {
+	Pass,
+	Mutated,
+	Rejected,
+}
+
+impl VisitOutcome {
+	fn merge(self, other: Self) -> Self {
+		match (self, other) {
+			(Self::Rejected, _) | (_, Self::Rejected) => Self::Rejected,
+			(Self::Mutated, _) | (_, Self::Mutated) => Self::Mutated,
+			_ => Self::Pass,
+		}
+	}
+}
+
 pub(crate) async fn run_request<P: DeserializeOwned>(
 	rp: &RegexProcessor,
 	method: &str,
 	params: Option<&mut Bytes>,
 ) -> Outcome<P> {
-	if !payload::supports_request(method) {
+	if !supports_request(method) {
 		return Outcome::Pass;
 	}
 	let Some(body) = params else {
@@ -42,7 +65,7 @@ pub(crate) async fn run_request<P: DeserializeOwned>(
 			return on_error(rp.failure_mode, method, &format!("decode params: {error}"));
 		},
 	};
-	let outcome = payload::visit_request(method, &mut value, &mut |text| inspect(rp, text));
+	let outcome = visit_request(method, &mut value, &mut |text| inspect(rp, text));
 	finish::<P>(rp, method, body, value, outcome, "re-encode masked params")
 }
 
@@ -51,7 +74,7 @@ pub(crate) async fn run_response(
 	method: &str,
 	body: &mut Bytes,
 ) -> Outcome<ServerResult> {
-	if !payload::supports_response(method) {
+	if !supports_response(method) {
 		return Outcome::Pass;
 	}
 	let mut value = match serde_json::from_slice::<Value>(body) {
@@ -60,12 +83,257 @@ pub(crate) async fn run_response(
 			return on_error(rp.failure_mode, method, &format!("decode result: {error}"));
 		},
 	};
-	let outcome = if payload::is_list_response(method) {
-		payload::filter_list_entries(method, &mut value, &mut |text| inspect(rp, text))
+	let outcome = if is_list_response(method) {
+		filter_list_entries(method, &mut value, &mut |text| inspect(rp, text))
 	} else {
-		payload::visit_response(method, &mut value, &mut |text| inspect(rp, text))
+		visit_response(method, &mut value, &mut |text| inspect(rp, text))
 	};
 	finish::<ServerResult>(rp, method, body, value, outcome, "re-encode masked result")
+}
+
+fn supports_request(method: &str) -> bool {
+	matches!(
+		method,
+		methods::TOOLS_CALL | methods::PROMPTS_GET | methods::RESOURCES_READ
+	)
+}
+
+fn supports_response(method: &str) -> bool {
+	matches!(
+		method,
+		methods::TOOLS_CALL
+			| methods::PROMPTS_GET
+			| methods::RESOURCES_READ
+			| methods::TOOLS_LIST
+			| methods::PROMPTS_LIST
+			| methods::RESOURCES_LIST
+			| methods::RESOURCES_TEMPLATES_LIST
+	)
+}
+
+fn is_list_response(method: &str) -> bool {
+	list_field(method).is_some()
+}
+
+fn list_field(method: &str) -> Option<&'static str> {
+	match method {
+		methods::TOOLS_LIST => Some("tools"),
+		methods::PROMPTS_LIST => Some("prompts"),
+		methods::RESOURCES_LIST => Some("resources"),
+		methods::RESOURCES_TEMPLATES_LIST => Some("resourceTemplates"),
+		_ => None,
+	}
+}
+
+fn visit_request(
+	method: &str,
+	params: &mut Value,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	match method {
+		methods::TOOLS_CALL | methods::PROMPTS_GET => params
+			.get_mut("arguments")
+			.map(|arguments| walk(arguments, visit))
+			.unwrap_or(VisitOutcome::Pass),
+		methods::RESOURCES_READ => field(params, "uri", visit),
+		_ => VisitOutcome::Pass,
+	}
+}
+
+fn visit_response(
+	method: &str,
+	result: &mut Value,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	match method {
+		methods::TOOLS_CALL => {
+			let mut outcome = content_array(result, "content", visit);
+			if outcome != VisitOutcome::Rejected {
+				if let Some(structured) = result.get_mut("structuredContent") {
+					outcome = outcome.merge(walk(structured, visit));
+				}
+			}
+			outcome
+		},
+		methods::RESOURCES_READ => array_fields(result, "contents", "text", visit),
+		methods::PROMPTS_GET => {
+			let mut outcome = field(result, "description", visit);
+			if outcome != VisitOutcome::Rejected {
+				if let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) {
+					for message in messages {
+						let Some(content) = message.get_mut("content") else {
+							continue;
+						};
+						outcome = outcome.merge(content_block(content, visit));
+						if outcome == VisitOutcome::Rejected {
+							break;
+						}
+					}
+				}
+			}
+			outcome
+		},
+		_ => VisitOutcome::Pass,
+	}
+}
+
+/// Drop list entries for which any inspected field would be rewritten. A rejection
+/// still rejects the entire response.
+fn filter_list_entries(
+	method: &str,
+	result: &mut Value,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	let Some(field_name) = list_field(method) else {
+		return VisitOutcome::Pass;
+	};
+	let Some(entries) = result.get_mut(field_name).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
+	};
+
+	let mut drop = vec![false; entries.len()];
+	for (index, entry) in entries.iter().enumerate() {
+		for key in ["name", "title", "description"] {
+			let Some(text) = entry.get(key).and_then(Value::as_str) else {
+				continue;
+			};
+			match visit(text) {
+				TextDecision::Pass => {},
+				TextDecision::Replace(_) => {
+					drop[index] = true;
+					break;
+				},
+				TextDecision::Reject => return VisitOutcome::Rejected,
+			}
+		}
+	}
+
+	if !drop.iter().any(|drop| *drop) {
+		return VisitOutcome::Pass;
+	}
+	let mut index = 0;
+	entries.retain(|_| {
+		let keep = !drop[index];
+		index += 1;
+		keep
+	});
+	VisitOutcome::Mutated
+}
+
+fn apply(text: &mut String, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+	match visit(text) {
+		TextDecision::Pass => VisitOutcome::Pass,
+		TextDecision::Replace(replacement) if replacement == *text => VisitOutcome::Pass,
+		TextDecision::Replace(replacement) => {
+			*text = replacement;
+			VisitOutcome::Mutated
+		},
+		TextDecision::Reject => VisitOutcome::Rejected,
+	}
+}
+
+fn field(
+	value: &mut Value,
+	key: &str,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	match value.get_mut(key) {
+		Some(Value::String(text)) => apply(text, visit),
+		_ => VisitOutcome::Pass,
+	}
+}
+
+fn walk(value: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+	match value {
+		Value::String(text) => apply(text, visit),
+		Value::Array(values) => {
+			let mut outcome = VisitOutcome::Pass;
+			for value in values {
+				outcome = outcome.merge(walk(value, visit));
+				if outcome == VisitOutcome::Rejected {
+					break;
+				}
+			}
+			outcome
+		},
+		Value::Object(values) => {
+			let mut outcome = VisitOutcome::Pass;
+			for value in values.values_mut() {
+				outcome = outcome.merge(walk(value, visit));
+				if outcome == VisitOutcome::Rejected {
+					break;
+				}
+			}
+			outcome
+		},
+		_ => VisitOutcome::Pass,
+	}
+}
+
+fn content_array(
+	result: &mut Value,
+	field_name: &str,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	let Some(contents) = result.get_mut(field_name).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
+	};
+	let mut outcome = VisitOutcome::Pass;
+	for content in contents {
+		outcome = outcome.merge(content_block(content, visit));
+		if outcome == VisitOutcome::Rejected {
+			break;
+		}
+	}
+	outcome
+}
+
+fn array_fields(
+	result: &mut Value,
+	array_name: &str,
+	field_name: &str,
+	visit: &mut impl FnMut(&str) -> TextDecision,
+) -> VisitOutcome {
+	let Some(values) = result.get_mut(array_name).and_then(Value::as_array_mut) else {
+		return VisitOutcome::Pass;
+	};
+	let mut outcome = VisitOutcome::Pass;
+	for value in values {
+		outcome = outcome.merge(field(value, field_name, visit));
+		if outcome == VisitOutcome::Rejected {
+			break;
+		}
+	}
+	outcome
+}
+
+fn content_block(block: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
+	match block.get("type").and_then(Value::as_str) {
+		Some("text") => field(block, "text", visit),
+		Some("resource") => {
+			let Some(resource) = block.get_mut("resource") else {
+				return VisitOutcome::Pass;
+			};
+			let mut outcome = field(resource, "text", visit);
+			if outcome != VisitOutcome::Rejected {
+				if let Some(contents) = resource.get_mut("resource") {
+					outcome = outcome.merge(field(contents, "text", visit));
+				}
+			}
+			outcome
+		},
+		Some("resource_link") => {
+			let mut outcome = VisitOutcome::Pass;
+			for key in ["name", "title", "description"] {
+				outcome = outcome.merge(field(block, key, visit));
+				if outcome == VisitOutcome::Rejected {
+					break;
+				}
+			}
+			outcome
+		},
+		_ => VisitOutcome::Pass,
+	}
 }
 
 fn inspect(rp: &RegexProcessor, text: &str) -> TextDecision {
@@ -287,6 +555,61 @@ rejection:
 		assert_eq!(
 			masked["content"][0]["resource"]["text"],
 			json!("a <masked> here")
+		);
+	}
+
+	#[tokio::test]
+	async fn response_tools_call_masks_structured_content_and_resource_links() {
+		let rp = processor(Action::Mask, &["secret"]);
+		let result = json!({
+			"content": [{
+				"type": "resource_link",
+				"uri": "file://x",
+				"name": "secret link",
+				"description": "contains secret",
+			}],
+			"structuredContent": {"nested": {"value": "deep secret"}},
+		});
+		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
+		assert!(matches!(
+			resp(&rp, methods::TOOLS_CALL, &mut bytes).await,
+			Outcome::Mutated(_)
+		));
+		let masked: Value = serde_json::from_slice(&bytes).unwrap();
+		assert_eq!(masked["content"][0]["name"], json!("<masked> link"));
+		assert_eq!(
+			masked["content"][0]["description"],
+			json!("contains <masked>")
+		);
+		assert_eq!(
+			masked["structuredContent"]["nested"]["value"],
+			json!("deep <masked>")
+		);
+	}
+
+	#[tokio::test]
+	async fn response_prompts_get_masks_description_and_embedded_resource() {
+		let rp = processor(Action::Mask, &["secret"]);
+		let result = json!({
+			"description": "secret prompt",
+			"messages": [{
+				"role": "user",
+				"content": {
+					"type": "resource",
+					"resource": {"resource": {"uri": "file://x", "text": "secret resource"}}
+				}
+			}],
+		});
+		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
+		assert!(matches!(
+			resp(&rp, methods::PROMPTS_GET, &mut bytes).await,
+			Outcome::Mutated(_)
+		));
+		let masked: Value = serde_json::from_slice(&bytes).unwrap();
+		assert_eq!(masked["description"], json!("<masked> prompt"));
+		assert_eq!(
+			masked["messages"][0]["content"]["resource"]["resource"]["text"],
+			json!("<masked> resource")
 		);
 	}
 

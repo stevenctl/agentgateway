@@ -35,7 +35,6 @@ impl McpGuardrailsDynamicMetadata {
 
 mod client;
 pub mod methods;
-mod payload;
 pub mod phase;
 mod regex;
 
