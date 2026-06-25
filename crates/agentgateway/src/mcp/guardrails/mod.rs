@@ -50,10 +50,7 @@ pub enum Outcome<T> {
 
 const DEFAULT_REJECTION: &str = "MCP call blocked by guardrail policy";
 
-/// MCP-shaped rejection config: the JSON-RPC error returned to the client when a
-/// processor rejects under `action: reject`. Shared across processor variants —
-/// the LLM driver's HTTP `RequestRejection` is meaningless to MCP, so each variant
-/// configures the JSON-RPC error here instead.
+/// JSON-RPC client facing error config for when a processor rejects a request or response.
 #[apply(schema!)]
 #[derive(Default)]
 pub struct McpRejection {
@@ -104,9 +101,9 @@ pub struct Processor {
 #[serde(rename_all = "camelCase", tag = "kind")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ProcessorKind {
-	/// Ship the message to an external MCP policy server over gRPC.
+	/// Call a remote ExtMCP service to apply rules. See [`Remote`] for config.
 	Remote(Remote),
-	/// Apply regex/PII rules in-process (mask or reject); no external service.
+	/// Apply regex/PII rules in-process.
 	Regex(RegexProcessor),
 }
 
