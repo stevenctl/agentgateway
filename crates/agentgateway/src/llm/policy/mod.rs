@@ -268,7 +268,7 @@ impl PromptGuardStreamingMode {
 	}
 }
 
-enum GuardrailOutcome {
+pub(crate) enum GuardrailOutcome {
 	None,
 	Masked,
 	Rejected(Response),
@@ -714,7 +714,7 @@ impl Policy {
 	/// This is the single place where every `RequestGuardKind` is dispatched,
 	/// so both the HTTP request path (`apply_prompt_guard`) and the realtime
 	/// WebSocket path (`apply_realtime_request_guards`) stay in sync.
-	async fn apply_single_request_guard(
+	pub(crate) async fn apply_single_request_guard(
 		guard: &RequestGuard,
 		req: &mut dyn RequestType,
 		http_headers: &HeaderMap,
@@ -1313,7 +1313,7 @@ impl Policy {
 		Ok(None)
 	}
 
-	async fn apply_single_response_guard(
+	pub(crate) async fn apply_single_response_guard(
 		guard: &ResponseGuard,
 		resp: &mut dyn ResponseType,
 		http_headers: &HeaderMap,

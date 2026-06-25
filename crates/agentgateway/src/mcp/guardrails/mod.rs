@@ -34,11 +34,16 @@ impl McpGuardrailsDynamicMetadata {
 }
 
 mod client;
+mod llm;
 pub mod methods;
 mod payload;
 pub mod phase;
 mod regex;
 
+pub use llm::{
+	AzureContentSafetyProcessor, BedrockGuardrailsProcessor, GoogleModelArmorProcessor,
+	WebhookProcessor,
+};
 pub use phase::Phase;
 pub use regex::RegexProcessor;
 
@@ -106,6 +111,14 @@ pub enum ProcessorKind {
 	Remote(Remote),
 	/// Apply regex/PII rules in-process.
 	Regex(RegexProcessor),
+	/// Call a webhook over the inspectable text of MCP bodies.
+	Webhook(WebhookProcessor),
+	/// Apply AWS Bedrock Guardrails over the inspectable text of MCP bodies.
+	BedrockGuardrails(BedrockGuardrailsProcessor),
+	/// Apply Google Model Armor over the inspectable text of MCP bodies.
+	GoogleModelArmor(GoogleModelArmorProcessor),
+	/// Apply Azure Content Safety over the inspectable text of MCP bodies.
+	AzureContentSafety(AzureContentSafetyProcessor),
 }
 
 impl McpGuardrails {
@@ -245,6 +258,46 @@ impl Processor {
 			ProcessorKind::Regex(rp) => {
 				regex::run_request::<P>(rp, ctx.method, ctx.params.as_mut()).await
 			},
+			ProcessorKind::Webhook(p) => {
+				p.run_request::<P>(
+					ctx.method,
+					ctx.params.as_mut(),
+					req_ctx.headers(),
+					client,
+					req_ctx.claims(),
+				)
+				.await
+			},
+			ProcessorKind::BedrockGuardrails(p) => {
+				p.run_request::<P>(
+					ctx.method,
+					ctx.params.as_mut(),
+					req_ctx.headers(),
+					client,
+					req_ctx.claims(),
+				)
+				.await
+			},
+			ProcessorKind::GoogleModelArmor(p) => {
+				p.run_request::<P>(
+					ctx.method,
+					ctx.params.as_mut(),
+					req_ctx.headers(),
+					client,
+					req_ctx.claims(),
+				)
+				.await
+			},
+			ProcessorKind::AzureContentSafety(p) => {
+				p.run_request::<P>(
+					ctx.method,
+					ctx.params.as_mut(),
+					req_ctx.headers(),
+					client,
+					req_ctx.claims(),
+				)
+				.await
+			},
 		}
 	}
 
@@ -261,6 +314,18 @@ impl Processor {
 				client::check_response(remote, method, backends, body, req_ctx, client).await
 			},
 			ProcessorKind::Regex(rp) => regex::run_response(rp, method, body).await,
+			ProcessorKind::Webhook(p) => {
+				p.run_response(method, body, req_ctx.headers(), client).await
+			},
+			ProcessorKind::BedrockGuardrails(p) => {
+				p.run_response(method, body, req_ctx.headers(), client).await
+			},
+			ProcessorKind::GoogleModelArmor(p) => {
+				p.run_response(method, body, req_ctx.headers(), client).await
+			},
+			ProcessorKind::AzureContentSafety(p) => {
+				p.run_response(method, body, req_ctx.headers(), client).await
+			},
 		}
 	}
 }

@@ -55,6 +55,12 @@ impl IncomingRequestContext {
 	pub fn headers_mut(&mut self) -> &mut http::HeaderMap {
 		&mut self.headers
 	}
+	pub fn headers(&self) -> &http::HeaderMap {
+		&self.headers
+	}
+	pub fn claims(&self) -> Option<crate::http::jwt::Claims> {
+		self.ext.get::<crate::http::jwt::Claims>().cloned()
+	}
 	pub fn extensions_mut(&mut self) -> &mut ::http::Extensions {
 		&mut self.ext
 	}
