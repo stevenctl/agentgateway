@@ -7,7 +7,6 @@
 //! name/title/description is scanned by the same driver, and any entry the driver
 //! rewrites or rejects is dropped via [`drop_list_entries`].
 
-use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use serde_json::Value;
@@ -121,6 +120,7 @@ impl Collector {
 				}
 			},
 			methods::PROMPTS_GET => {
+				self.field(result, "description", &root);
 				let messages = root.key("messages");
 				for (i, m) in content_array_iter(result, "messages") {
 					if let Some(content) = m.get("content") {
@@ -209,8 +209,7 @@ pub(crate) fn extract_list_entries(method: &str, result: &Value) -> Vec<EntrySlo
 	slots
 }
 
-/// Remove the given entry indices from a `*/list` array, dropping the highest
-/// index first so the remaining positions stay valid.
+/// Remove the given entry indices from a `*/list` array in a single pass.
 pub(crate) fn drop_list_entries(method: &str, result: &mut Value, drop: &HashSet<usize>) {
 	let Some(field) = list_field(method) else {
 		return;
@@ -218,13 +217,12 @@ pub(crate) fn drop_list_entries(method: &str, result: &mut Value, drop: &HashSet
 	let Some(arr) = result.get_mut(field).and_then(Value::as_array_mut) else {
 		return;
 	};
-	let mut indices: Vec<usize> = drop.iter().copied().collect();
-	indices.sort_unstable_by_key(|i| Reverse(*i));
-	for index in indices {
-		if index < arr.len() {
-			arr.remove(index);
-		}
-	}
+	let mut index = 0;
+	arr.retain(|_| {
+		let keep = !drop.contains(&index);
+		index += 1;
+		keep
+	});
 }
 
 fn content_array_iter<'a>(obj: &'a Value, field: &str) -> impl Iterator<Item = (usize, &'a Value)> {
@@ -360,16 +358,19 @@ mod tests {
 
 	#[test]
 	fn response_prompts_get_scans_embedded_resource() {
-		let result = json!({"messages": [
-			{"role": "user", "content": {"type": "text", "text": "plain"}},
-			{"role": "user", "content": {
-				"type": "resource",
-				"resource": {"resource": {"uri": "u", "text": "res leak"}}
-			}},
-		]});
+		let result = json!({
+			"description": "top-level leak",
+			"messages": [
+				{"role": "user", "content": {"type": "text", "text": "plain"}},
+				{"role": "user", "content": {
+					"type": "resource",
+					"resource": {"resource": {"uri": "u", "text": "res leak"}}
+				}},
+			],
+		});
 		assert_eq!(
 			texts(&extract_response(methods::PROMPTS_GET, &result)),
-			vec!["plain", "res leak"]
+			vec!["plain", "res leak", "top-level leak"]
 		);
 	}
 
