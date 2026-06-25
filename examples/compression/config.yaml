@@ -1,0 +1,20 @@
+# Deterministic headroom compression of Anthropic /v1/messages tool results.
+#
+# Run (replace the apiKey below with your real Anthropic key first):
+#   LOCAL_XDS_PATH=examples/compression/config.yaml cargo run -p agentgateway
+#
+# Then point an Anthropic client at http://localhost:3000. Tool results in older
+# turns (every message except the most recent) are detected + compressed on the
+# way upstream; the freshest turn is left intact. See llm/ctxedit.
+llm:
+  port: 3000
+  policies:
+    compression:
+      headroom: true
+      gcf: false
+  models:
+  - name: claude-sonnet-4-5
+    provider: anthropic
+    params:
+      model: claude-sonnet-4-5
+      apiKey: "sk-ant-REPLACE_ME"

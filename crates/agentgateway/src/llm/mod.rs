@@ -29,6 +29,7 @@ pub mod anthropic;
 pub mod azure;
 pub mod bedrock;
 pub mod copilot;
+pub mod ctxedit;
 pub mod custom;
 pub mod gemini;
 pub mod model_router;
@@ -1129,6 +1130,15 @@ impl AIProvider {
 					policies.and_then(|p| p.prompt_caching.as_ref()),
 				)?,
 			}
+		};
+
+		// Context compression. Runs on the final serialized provider bytes (the
+		// cache-alignment boundary the upstream caches against). No-ops for
+		// unsupported providers/formats. See llm/ctxedit.
+		let new_request = if let Some(cp) = policies.and_then(|p| p.compression.as_deref()) {
+			cp.maybe_compact(self, original_format, request_model, new_request)
+		} else {
+			new_request
 		};
 
 		parts.headers.remove(header::CONTENT_LENGTH);

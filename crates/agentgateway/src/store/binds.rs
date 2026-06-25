@@ -472,6 +472,11 @@ impl LLMRequestPolicies {
 			} else {
 				preferred.routes.clone()
 			},
+			// Merge: prefer the more-specific policy's compression, else fallback.
+			compression: preferred
+				.compression
+				.clone()
+				.or_else(|| fallback.compression.clone()),
 		})
 	}
 }

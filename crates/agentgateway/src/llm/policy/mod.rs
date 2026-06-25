@@ -147,6 +147,10 @@ pub struct Policy {
 		schemars(with = "std::collections::HashMap<String, crate::llm::RouteType>")
 	)]
 	pub routes: SortedRoutes,
+	/// Context-edit (compression) policy. Built during config translation, not
+	/// deserialized — hence `skip`.
+	#[serde(skip)]
+	pub compression: Option<Arc<crate::llm::ctxedit::ContextEditPolicy>>,
 }
 
 /// Wildcard pattern converted to regex for model name matching.

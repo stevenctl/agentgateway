@@ -48,6 +48,11 @@ agentgateway = { path = "crates/agentgateway" }
 cel = { path = "crates/cel-fork/cel" }
 cel-derive = { path = "crates/cel-fork/cel-derive" }
 protos = { path = "crates/protos" }
+# Context-compression library (separate workspace). default-features = false
+# drops serde_json/arbitrary_precision, which Cargo would otherwise unify into
+# agw's build and break config parsing — see crates/headroom-core/Cargo.toml.
+headroom-core = { path = "../headroom/crates/headroom-core", default-features = false }
+gcf = "2.1.1"
 atomic_float = { version = "1.1.0", features = ["serde"] }
 anyhow = "1.0"
 arc-swap = "1.9"

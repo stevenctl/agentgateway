@@ -1,0 +1,12 @@
+# Compose overlay for `harbor run --extra-docker-compose`.
+#
+# Default Harbor docker-compose files put the task container on a bridge network
+# with no host mapping, so on Linux `host.docker.internal` does not resolve. This
+# overlay adds the standard host-gateway alias so the claude-code agent inside the
+# container can reach the agentgateway running on the host:
+#
+#   ANTHROPIC_BASE_URL=http://host.docker.internal:3000
+services:
+  main:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

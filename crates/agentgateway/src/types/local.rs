@@ -1783,6 +1783,9 @@ struct LocalLLMPolicy {
 	/// Remote rate limit checks for incoming requests.
 	#[serde(default)]
 	remote_rate_limit: Option<crate::http::remoteratelimit::RemoteRateLimit>,
+	/// Context compression applied to every configured model.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	compression: Option<crate::llm::ctxedit::config::LocalCompression>,
 }
 
 #[apply(schema_de!)]
@@ -2747,15 +2750,21 @@ async fn convert_llm_config(
 	let mut all_backends = vec![];
 	let mut routes = Vec::new();
 	let mut shared_prompt_guard = None;
+	// Context compression is configured once at the shared LLM-policy level; the
+	// resolved policy (which owns the CCR store) is cloned into every model.
+	let mut shared_compression: Option<Arc<crate::llm::ctxedit::ContextEditPolicy>> = None;
 	let llm_route_policies = if let Some(pol) = policies {
 		let LocalLLMPolicy {
 			gateway,
 			guardrails,
 			local_rate_limit,
 			remote_rate_limit,
+			compression,
 		} = pol;
 		// Guardrail is per-model config, but we let users configure it top level. Pull it out here.
 		shared_prompt_guard = guardrails;
+		// Build the compression policy once; share the Arc across all models.
+		shared_compression = compression.map(|c| c.build()).transpose()?.map(Arc::new);
 		// Rate limit is applied per-route as well. Resolve them here.
 		let route_policies = split_policies(
 			client.clone(),
@@ -3077,6 +3086,7 @@ async fn convert_llm_config(
 			wildcard_patterns: Arc::new(vec![]),
 			prompt_caching: model_config.prompt_caching.clone(),
 			routes: Default::default(),
+			compression: shared_compression.clone(),
 		})));
 		let resolved_inline_policies = pols.clone();
 		let backend_with_policies = BackendWithPolicies {

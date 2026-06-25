@@ -239,6 +239,35 @@ async fn test_llm_simple_config() {
 }
 
 #[tokio::test]
+async fn test_llm_compression_config_normalizes() {
+	// Smoke test: the top-level `llm:` form accepts a `compression` policy and the
+	// build() path runs cleanly. Engine behavior is covered by ctxedit unit tests.
+	let normalized = normalize_test_config(
+		r#"
+llm:
+  policies:
+    compression:
+      headroom: true
+  models:
+  - name: claude-3-haiku
+    provider: anthropic
+    params:
+      model: claude-haiku-4-5-20251001
+      apiKey: "sk-123"
+"#,
+	)
+	.await
+	.expect("llm config with compression should normalize");
+	assert!(
+		normalized
+			.backends
+			.iter()
+			.any(|b| matches!(b.backend, Backend::AI(_, _))),
+		"expected a generated AI backend",
+	);
+}
+
+#[tokio::test]
 async fn test_llm_provider_reference_config() {
 	test_config_parsing("llm_provider_reference").await;
 }

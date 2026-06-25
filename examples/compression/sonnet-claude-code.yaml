@@ -1,0 +1,26 @@
+# Sonnet-4 behind agentgateway with deterministic headroom compression of
+# Anthropic /v1/messages tool results. Intended to sit in front of Anthropic and
+# be driven by the claude-code agent (Harbor terminal-bench).
+#
+# The upstream Anthropic key is read from a file so it never lands in this YAML:
+#   echo -n "sk-ant-..." > /tmp/claude-1000/-home-landow-solo-agentgateway/bd6db166-aacd-4026-8a39-17bf46bc916f/scratchpad/anthropic.key
+#
+# Run:
+#   LOCAL_XDS_PATH=examples/compression/sonnet-claude-code.yaml \
+#     ./target/debug/agentgateway
+#
+# Point claude-code at it:
+#   ANTHROPIC_BASE_URL=http://<host>:3000 ANTHROPIC_API_KEY=placeholder claude ...
+# (the gateway injects the real key from the file above; claude-code's key is ignored)
+llm:
+  port: 3000
+  policies:
+    compression:
+      headroom: true
+  models:
+  - name: claude-sonnet-4-6
+    provider: anthropic
+    params:
+      model: claude-sonnet-4-6
+      apiKey:
+        file: /tmp/claude-1000/-home-landow-solo-agentgateway/bd6db166-aacd-4026-8a39-17bf46bc916f/scratchpad/anthropic.key
