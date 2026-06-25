@@ -46,6 +46,39 @@ impl VisitOutcome {
 			_ => Self::Pass,
 		}
 	}
+
+	/// Merge in `next` unless already rejected (which short-circuits).
+	fn then(self, next: impl FnOnce() -> Self) -> Self {
+		if self == Self::Rejected {
+			self
+		} else {
+			self.merge(next())
+		}
+	}
+}
+
+/// Fold `f` over `items`, short-circuiting on the first Rejected.
+fn each<T>(items: impl IntoIterator<Item = T>, mut f: impl FnMut(T) -> VisitOutcome) -> VisitOutcome {
+	let mut outcome = VisitOutcome::Pass;
+	for item in items {
+		outcome = outcome.merge(f(item));
+		if outcome == VisitOutcome::Rejected {
+			break;
+		}
+	}
+	outcome
+}
+
+/// Fold `f` over an array-valued field; Pass if missing or not an array.
+fn array(
+	value: &mut Value,
+	key: &str,
+	f: impl FnMut(&mut Value) -> VisitOutcome,
+) -> VisitOutcome {
+	match value.get_mut(key).and_then(Value::as_array_mut) {
+		Some(items) => each(items, f),
+		None => VisitOutcome::Pass,
+	}
 }
 
 pub(crate) async fn run_request<P: DeserializeOwned>(
@@ -146,33 +179,19 @@ fn visit_response(
 	visit: &mut impl FnMut(&str) -> TextDecision,
 ) -> VisitOutcome {
 	match method {
-		methods::TOOLS_CALL => {
-			let mut outcome = content_array(result, "content", visit);
-			if outcome != VisitOutcome::Rejected {
-				if let Some(structured) = result.get_mut("structuredContent") {
-					outcome = outcome.merge(walk(structured, visit));
-				}
+		methods::TOOLS_CALL => array(result, "content", |c| content_block(c, visit)).then(|| {
+			match result.get_mut("structuredContent") {
+				Some(structured) => walk(structured, visit),
+				None => VisitOutcome::Pass,
 			}
-			outcome
-		},
-		methods::RESOURCES_READ => array_fields(result, "contents", "text", visit),
-		methods::PROMPTS_GET => {
-			let mut outcome = field(result, "description", visit);
-			if outcome != VisitOutcome::Rejected {
-				if let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) {
-					for message in messages {
-						let Some(content) = message.get_mut("content") else {
-							continue;
-						};
-						outcome = outcome.merge(content_block(content, visit));
-						if outcome == VisitOutcome::Rejected {
-							break;
-						}
-					}
-				}
-			}
-			outcome
-		},
+		}),
+		methods::RESOURCES_READ => array(result, "contents", |v| field(v, "text", visit)),
+		methods::PROMPTS_GET => field(result, "description", visit).then(|| {
+			array(result, "messages", |message| match message.get_mut("content") {
+				Some(content) => content_block(content, visit),
+				None => VisitOutcome::Pass,
+			})
+		}),
 		_ => VisitOutcome::Pass,
 	}
 }
@@ -246,92 +265,23 @@ fn field(
 fn walk(value: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
 	match value {
 		Value::String(text) => apply(text, visit),
-		Value::Array(values) => {
-			let mut outcome = VisitOutcome::Pass;
-			for value in values {
-				outcome = outcome.merge(walk(value, visit));
-				if outcome == VisitOutcome::Rejected {
-					break;
-				}
-			}
-			outcome
-		},
-		Value::Object(values) => {
-			let mut outcome = VisitOutcome::Pass;
-			for value in values.values_mut() {
-				outcome = outcome.merge(walk(value, visit));
-				if outcome == VisitOutcome::Rejected {
-					break;
-				}
-			}
-			outcome
-		},
+		Value::Array(values) => each(values, |value| walk(value, visit)),
+		Value::Object(values) => each(values.values_mut(), |value| walk(value, visit)),
 		_ => VisitOutcome::Pass,
 	}
-}
-
-fn content_array(
-	result: &mut Value,
-	field_name: &str,
-	visit: &mut impl FnMut(&str) -> TextDecision,
-) -> VisitOutcome {
-	let Some(contents) = result.get_mut(field_name).and_then(Value::as_array_mut) else {
-		return VisitOutcome::Pass;
-	};
-	let mut outcome = VisitOutcome::Pass;
-	for content in contents {
-		outcome = outcome.merge(content_block(content, visit));
-		if outcome == VisitOutcome::Rejected {
-			break;
-		}
-	}
-	outcome
-}
-
-fn array_fields(
-	result: &mut Value,
-	array_name: &str,
-	field_name: &str,
-	visit: &mut impl FnMut(&str) -> TextDecision,
-) -> VisitOutcome {
-	let Some(values) = result.get_mut(array_name).and_then(Value::as_array_mut) else {
-		return VisitOutcome::Pass;
-	};
-	let mut outcome = VisitOutcome::Pass;
-	for value in values {
-		outcome = outcome.merge(field(value, field_name, visit));
-		if outcome == VisitOutcome::Rejected {
-			break;
-		}
-	}
-	outcome
 }
 
 fn content_block(block: &mut Value, visit: &mut impl FnMut(&str) -> TextDecision) -> VisitOutcome {
 	match block.get("type").and_then(Value::as_str) {
 		Some("text") => field(block, "text", visit),
-		Some("resource") => {
-			let Some(resource) = block.get_mut("resource") else {
-				return VisitOutcome::Pass;
-			};
-			let mut outcome = field(resource, "text", visit);
-			if outcome != VisitOutcome::Rejected {
-				if let Some(contents) = resource.get_mut("resource") {
-					outcome = outcome.merge(field(contents, "text", visit));
-				}
-			}
-			outcome
+		Some("resource") => match block.get_mut("resource") {
+			Some(resource) => field(resource, "text", visit).then(|| match resource.get_mut("resource") {
+				Some(contents) => field(contents, "text", visit),
+				None => VisitOutcome::Pass,
+			}),
+			None => VisitOutcome::Pass,
 		},
-		Some("resource_link") => {
-			let mut outcome = VisitOutcome::Pass;
-			for key in ["name", "title", "description"] {
-				outcome = outcome.merge(field(block, key, visit));
-				if outcome == VisitOutcome::Rejected {
-					break;
-				}
-			}
-			outcome
-		},
+		Some("resource_link") => each(["name", "title", "description"], |key| field(block, key, visit)),
 		_ => VisitOutcome::Pass,
 	}
 }
@@ -626,21 +576,6 @@ rejection:
 		let filtered: Value = serde_json::from_slice(&bytes).unwrap();
 		assert_eq!(filtered["tools"].as_array().unwrap().len(), 1);
 		assert_eq!(filtered["tools"][0]["name"], json!("safe"));
-	}
-
-	#[tokio::test]
-	async fn response_list_drops_entry_on_name_match() {
-		let rp = processor(Action::Mask, &["^delete_"]);
-		let result = json!({"tools": [
-			{"name": "echo", "description": "echoes input"},
-			{"name": "delete_db", "description": "drops a database"},
-		]});
-		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
-		let outcome = resp(&rp, methods::TOOLS_LIST, &mut bytes).await;
-		assert!(matches!(outcome, Outcome::Mutated(_)));
-		let filtered: Value = serde_json::from_slice(&bytes).unwrap();
-		assert_eq!(filtered["tools"].as_array().unwrap().len(), 1);
-		assert_eq!(filtered["tools"][0]["name"], json!("echo"));
 	}
 
 	#[tokio::test]
