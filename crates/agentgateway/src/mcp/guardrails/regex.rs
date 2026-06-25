@@ -1,14 +1,19 @@
+//! The regex/PII MCP guardrail variant.
+//!
+//! Thin glue over the shared adapter: build the matching LLM `RequestGuard` /
+//! `ResponseGuard` from config and let [`super::adapter`] run it through the LLM
+//! regex driver — including list responses, which the adapter filters per-entry.
+
 use bytes::Bytes;
-use rmcp::model::{ErrorCode, ErrorData, ServerResult};
+use rmcp::model::ServerResult;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 
-use super::payload::{self, LeafVerdict, Scan};
-use super::{FailureMode, Outcome, client};
-use crate::llm::policy::{Policy, RegexResult, RegexRules};
+use super::{FailureMode, McpRejection, Outcome, adapter};
+use crate::llm::policy::{
+	RegexRules, RequestGuard, RequestGuardKind, RequestRejection, ResponseGuard, ResponseGuardKind,
+};
+use crate::proxy::httpproxy::PolicyClient;
 use crate::*;
-
-const DEFAULT_REJECTION: &str = "Request blocked by guardrail policy";
 
 #[apply(schema!)]
 pub struct RegexProcessor {
@@ -22,131 +27,83 @@ pub struct RegexProcessor {
 	pub failure_mode: FailureMode,
 }
 
-#[apply(schema!)]
-#[derive(Default)]
-pub struct McpRejection {
-	/// JSON-RPC error message. Defaults to a generic policy-violation message.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub message: Option<String>,
-}
-
 impl RegexProcessor {
-	fn rule_rejection(&self) -> ErrorData {
-		let message = self
-			.rejection
-			.message
-			.clone()
-			.unwrap_or_else(|| DEFAULT_REJECTION.to_string());
-		ErrorData::new(client::PERMISSION_DENIED, message, None)
+	fn request_guard(&self) -> RequestGuard {
+		RequestGuard {
+			rejection: RequestRejection::default(),
+			kind: RequestGuardKind::Regex(self.rules.clone()),
+		}
 	}
 
-	fn on_error<T>(&self, method: &str, reason: &str) -> Outcome<T> {
-		match self.failure_mode {
-			FailureMode::FailOpen => {
-				tracing::warn!(
-					method,
-					reason,
-					"mcpGuardrails: regex processor failing open"
-				);
-				Outcome::Pass
-			},
-			FailureMode::FailClosed => {
-				tracing::warn!(
-					method,
-					reason,
-					"mcpGuardrails: regex processor failing closed"
-				);
-				Outcome::Reject(ErrorData::new(
-					ErrorCode::INTERNAL_ERROR,
-					format!("mcpGuardrails regex processor error: {reason}"),
-					None,
-				))
-			},
+	fn response_guard(&self) -> ResponseGuard {
+		ResponseGuard {
+			rejection: RequestRejection::default(),
+			kind: ResponseGuardKind::Regex(self.rules.clone()),
 		}
 	}
 }
 
-pub(crate) fn run_request<P: DeserializeOwned>(
+pub(crate) async fn run_request<P: DeserializeOwned>(
 	rp: &RegexProcessor,
 	method: &str,
 	params: Option<&mut Bytes>,
+	headers: &::http::HeaderMap,
+	client: &PolicyClient,
 ) -> Outcome<P> {
-	if !payload::supports_request(method) {
-		return Outcome::Pass;
-	}
-	let Some(dest) = params else {
-		return Outcome::Pass;
-	};
-	let mut value = match serde_json::from_slice::<Value>(dest) {
-		Ok(v) => v,
-		Err(e) => return rp.on_error(method, &format!("decode params: {e}")),
-	};
-	let edits = match payload::scan_request(method, &value, &mut |t| verdict(rp, t)) {
-		Scan::Pass => return Outcome::Pass,
-		Scan::Reject => return Outcome::Reject(rp.rule_rejection()),
-		Scan::Edits(edits) => edits,
-	};
-	payload::apply_edits(&mut value, edits);
-	match reserialize::<P>(&value) {
-		Some((parsed, bytes)) => {
-			*dest = bytes;
-			Outcome::Mutated(parsed)
-		},
-		None => rp.on_error(method, "re-encode masked params"),
-	}
+	adapter::run_request_guard::<P>(
+		&rp.request_guard(),
+		method,
+		params,
+		&rp.rejection.to_error(),
+		rp.failure_mode,
+		headers,
+		client,
+		None,
+	)
+	.await
 }
 
-pub(crate) fn run_response(
+pub(crate) async fn run_response(
 	rp: &RegexProcessor,
 	method: &str,
 	body: &mut Bytes,
+	headers: &::http::HeaderMap,
+	client: &PolicyClient,
 ) -> Outcome<ServerResult> {
-	if !payload::supports_response(method) {
-		return Outcome::Pass;
-	}
-	let mut value = match serde_json::from_slice::<Value>(body) {
-		Ok(v) => v,
-		Err(e) => return rp.on_error(method, &format!("decode result: {e}")),
-	};
-	let edits = match payload::scan_response(method, &value, &mut |t| verdict(rp, t)) {
-		Scan::Pass => return Outcome::Pass,
-		Scan::Reject => return Outcome::Reject(rp.rule_rejection()),
-		Scan::Edits(edits) => edits,
-	};
-	payload::apply_edits(&mut value, edits);
-	match reserialize::<ServerResult>(&value) {
-		Some((parsed, bytes)) => {
-			*body = bytes;
-			Outcome::Mutated(parsed)
-		},
-		None => rp.on_error(method, "re-encode masked result"),
-	}
-}
-
-fn verdict(rp: &RegexProcessor, text: &str) -> LeafVerdict {
-	match Policy::apply_prompt_guard_regex(text, &rp.rules) {
-		None => LeafVerdict::Clean,
-		Some(RegexResult::Mask(masked)) => LeafVerdict::Masked(masked),
-		Some(RegexResult::Reject) => LeafVerdict::Rejected,
-	}
-}
-
-fn reserialize<P: DeserializeOwned>(value: &Value) -> Option<(P, Bytes)> {
-	let bytes: Bytes = serde_json::to_vec(value).ok()?.into();
-	let parsed = serde_json::from_slice::<P>(&bytes)
-		.inspect_err(|e| tracing::warn!(error = %e, "mcpGuardrails: regex re-encode failed to parse"))
-		.ok()?;
-	Some((parsed, bytes))
+	adapter::run_response_guard(
+		&rp.response_guard(),
+		method,
+		body,
+		&rp.rejection.to_error(),
+		rp.failure_mode,
+		headers,
+		client,
+	)
+	.await
 }
 
 #[cfg(test)]
 mod tests {
 	use rmcp::model::CallToolRequestParams;
-	use serde_json::json;
+	use serde_json::{Value, json};
 
 	use super::*;
 	use crate::llm::policy::{Action, RegexRule};
-	use crate::mcp::guardrails::methods;
+	use crate::mcp::guardrails::{client, methods};
+
+	// Regex guards never touch the PolicyClient or headers, but the adapter
+	// signature requires them.
+	fn test_client() -> PolicyClient {
+		PolicyClient::new(
+			crate::test_helpers::proxymock::setup_proxy_test("{}")
+				.unwrap()
+				.pi,
+		)
+	}
+
+	fn headers() -> ::http::HeaderMap {
+		::http::HeaderMap::new()
+	}
 
 	fn processor(action: Action, patterns: &[&str]) -> RegexProcessor {
 		RegexProcessor {
@@ -177,6 +134,18 @@ mod tests {
 		}
 	}
 
+	async fn req<P: DeserializeOwned>(
+		rp: &RegexProcessor,
+		method: &str,
+		params: Option<&mut Bytes>,
+	) -> Outcome<P> {
+		run_request::<P>(rp, method, params, &headers(), &test_client()).await
+	}
+
+	async fn resp(rp: &RegexProcessor, method: &str, body: &mut Bytes) -> Outcome<ServerResult> {
+		run_response(rp, method, body, &headers(), &test_client()).await
+	}
+
 	#[test]
 	fn deser_regex_processor() {
 		let cfg = r#"
@@ -193,93 +162,98 @@ rejection:
 		assert_eq!(rp.failure_mode, FailureMode::FailClosed);
 	}
 
-	#[test]
-	fn unparseable_body_honors_failure_mode() {
+	#[tokio::test]
+	async fn unparseable_body_honors_failure_mode() {
 		let mut rp = ssn_processor(Action::Mask);
 		let mut bytes: Bytes = Bytes::from_static(b"not json");
-		let out = run_request::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes));
-		assert!(matches!(out, Outcome::Reject(_)));
+		assert!(matches!(
+			req::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes)).await,
+			Outcome::Reject(_)
+		));
 
 		rp.failure_mode = FailureMode::FailOpen;
 		let mut bytes: Bytes = Bytes::from_static(b"not json");
-		let out = run_request::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes));
-		assert!(matches!(out, Outcome::Pass));
+		assert!(matches!(
+			req::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes)).await,
+			Outcome::Pass
+		));
 	}
 
-	#[test]
-	fn request_mask_rewrites_arguments() {
+	#[tokio::test]
+	async fn request_mask_rewrites_arguments() {
 		let rp = ssn_processor(Action::Mask);
 		let params = json!({"name": "echo", "arguments": {"note": "ssn 123-45-6789 here"}});
 		let mut bytes: Bytes = serde_json::to_vec(&params).unwrap().into();
-		let outcome = run_request::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes));
+		let outcome = req::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes)).await;
 		assert!(matches!(outcome, Outcome::Mutated(_)));
 		let masked: Value = serde_json::from_slice(&bytes).unwrap();
 		assert_eq!(masked["arguments"]["note"], json!("ssn <SSN> here"));
 	}
 
-	#[test]
-	fn request_reject_returns_error() {
+	#[tokio::test]
+	async fn request_reject_returns_error() {
 		let rp = ssn_processor(Action::Reject);
 		let params = json!({"name": "echo", "arguments": {"note": "123-45-6789"}});
 		let mut bytes: Bytes = serde_json::to_vec(&params).unwrap().into();
-		let outcome = run_request::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes));
-		let Outcome::Reject(err) = outcome else {
+		let Outcome::Reject(err) =
+			req::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes)).await
+		else {
 			panic!("expected reject");
 		};
 		assert_eq!(err.code, client::PERMISSION_DENIED);
 	}
 
-	#[test]
-	fn request_no_match_passes() {
+	#[tokio::test]
+	async fn request_no_match_passes() {
 		let rp = ssn_processor(Action::Mask);
 		let params = json!({"name": "echo", "arguments": {"note": "nothing here"}});
 		let mut bytes: Bytes = serde_json::to_vec(&params).unwrap().into();
-		let outcome = run_request::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes));
+		let outcome = req::<CallToolRequestParams>(&rp, methods::TOOLS_CALL, Some(&mut bytes)).await;
 		assert!(matches!(outcome, Outcome::Pass));
 	}
 
-	#[test]
-	fn request_without_body_passes() {
+	#[tokio::test]
+	async fn request_without_body_passes() {
 		let rp = ssn_processor(Action::Mask);
-		let outcome = run_request::<CallToolRequestParams>(&rp, "tools/list", None);
+		let outcome = req::<CallToolRequestParams>(&rp, "tools/list", None).await;
 		assert!(matches!(outcome, Outcome::Pass));
 	}
 
-	#[test]
-	fn unsupported_method_does_not_parse_body() {
+	#[tokio::test]
+	async fn unsupported_method_does_not_parse_body() {
 		let rp = ssn_processor(Action::Mask);
 		let mut request = Bytes::from_static(b"not json");
 		assert!(matches!(
-			run_request::<CallToolRequestParams>(&rp, "custom/method", Some(&mut request)),
+			req::<CallToolRequestParams>(&rp, "custom/method", Some(&mut request)).await,
 			Outcome::Pass
 		));
 
 		let mut response = Bytes::from_static(b"not json");
 		assert!(matches!(
-			run_response(&rp, "custom/method", &mut response),
+			resp(&rp, "custom/method", &mut response).await,
 			Outcome::Pass
 		));
 	}
 
-	#[test]
-	fn response_tools_call_masks_text_content() {
+	#[tokio::test]
+	async fn response_tools_call_masks_text_content() {
 		let rp = processor(Action::Mask, &["secret"]);
 		let result = json!({"content": [{"type": "text", "text": "the secret value"}]});
 		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
-		let outcome = run_response(&rp, methods::TOOLS_CALL, &mut bytes);
+		let outcome = resp(&rp, methods::TOOLS_CALL, &mut bytes).await;
 		assert!(matches!(outcome, Outcome::Mutated(_)));
 		let masked: Value = serde_json::from_slice(&bytes).unwrap();
 		assert_eq!(masked["content"][0]["text"], json!("the <masked> value"));
 	}
 
-	#[test]
-	fn response_tools_call_masks_embedded_resource() {
+	#[tokio::test]
+	async fn response_tools_call_masks_embedded_resource() {
 		let rp = processor(Action::Mask, &["secret"]);
 		let result = json!({"content": [
 			{"type": "resource", "resource": {"uri": "file://x", "text": "a secret here"}},
 		]});
 		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
-		let outcome = run_response(&rp, methods::TOOLS_CALL, &mut bytes);
+		let outcome = resp(&rp, methods::TOOLS_CALL, &mut bytes).await;
 		assert!(matches!(outcome, Outcome::Mutated(_)));
 		let masked: Value = serde_json::from_slice(&bytes).unwrap();
 		assert_eq!(
@@ -288,18 +262,45 @@ rejection:
 		);
 	}
 
-	#[test]
-	fn response_list_drops_matching_entry() {
+	#[tokio::test]
+	async fn response_list_drops_matching_entry() {
 		let rp = processor(Action::Mask, &["dangerous"]);
 		let result = json!({"tools": [
 			{"name": "safe", "description": "ok"},
 			{"name": "evil", "description": "dangerous tool"},
 		]});
 		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
-		let outcome = run_response(&rp, methods::TOOLS_LIST, &mut bytes);
+		let outcome = resp(&rp, methods::TOOLS_LIST, &mut bytes).await;
 		assert!(matches!(outcome, Outcome::Mutated(_)));
 		let filtered: Value = serde_json::from_slice(&bytes).unwrap();
 		assert_eq!(filtered["tools"].as_array().unwrap().len(), 1);
 		assert_eq!(filtered["tools"][0]["name"], json!("safe"));
+	}
+
+	#[tokio::test]
+	async fn response_list_drops_entry_on_name_match() {
+		let rp = processor(Action::Mask, &["^delete_"]);
+		let result = json!({"tools": [
+			{"name": "echo", "description": "echoes input"},
+			{"name": "delete_db", "description": "drops a database"},
+		]});
+		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
+		let outcome = resp(&rp, methods::TOOLS_LIST, &mut bytes).await;
+		assert!(matches!(outcome, Outcome::Mutated(_)));
+		let filtered: Value = serde_json::from_slice(&bytes).unwrap();
+		assert_eq!(filtered["tools"].as_array().unwrap().len(), 1);
+		assert_eq!(filtered["tools"][0]["name"], json!("echo"));
+	}
+
+	#[tokio::test]
+	async fn response_list_reject_blocks_whole_response() {
+		let rp = processor(Action::Reject, &["dangerous"]);
+		let result = json!({"tools": [
+			{"name": "safe", "description": "ok"},
+			{"name": "evil", "description": "dangerous tool"},
+		]});
+		let mut bytes: Bytes = serde_json::to_vec(&result).unwrap().into();
+		let outcome = resp(&rp, methods::TOOLS_LIST, &mut bytes).await;
+		assert!(matches!(outcome, Outcome::Reject(_)));
 	}
 }

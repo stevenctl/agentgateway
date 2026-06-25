@@ -33,6 +33,7 @@ impl McpGuardrailsDynamicMetadata {
 	}
 }
 
+mod adapter;
 mod client;
 pub mod methods;
 mod payload;
@@ -47,6 +48,31 @@ pub enum Outcome<T> {
 	Pass,
 	Mutated(T),
 	Reject(rmcp::model::ErrorData),
+}
+
+const DEFAULT_REJECTION: &str = "Request blocked by guardrail policy";
+
+/// MCP-shaped rejection config: the JSON-RPC error returned to the client when a
+/// processor rejects under `action: reject`. Shared across processor variants —
+/// the LLM driver's HTTP `RequestRejection` is meaningless to MCP, so each variant
+/// configures the JSON-RPC error here instead.
+#[apply(schema!)]
+#[derive(Default)]
+pub struct McpRejection {
+	/// JSON-RPC error message. Defaults to a generic policy-violation message.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub message: Option<String>,
+}
+
+impl McpRejection {
+	/// Render the JSON-RPC error returned when a rule matches under `action: reject`.
+	fn to_error(&self) -> rmcp::model::ErrorData {
+		let message = self
+			.message
+			.clone()
+			.unwrap_or_else(|| DEFAULT_REJECTION.to_string());
+		rmcp::model::ErrorData::new(client::PERMISSION_DENIED, message, None)
+	}
 }
 
 pub mod wire {
@@ -220,7 +246,16 @@ impl Processor {
 				)
 				.await
 			},
-			ProcessorKind::Regex(rp) => regex::run_request::<P>(rp, ctx.method, ctx.params.as_mut()),
+			ProcessorKind::Regex(rp) => {
+				regex::run_request::<P>(
+					rp,
+					ctx.method,
+					ctx.params.as_mut(),
+					req_ctx.headers(),
+					client,
+				)
+				.await
+			},
 		}
 	}
 
@@ -236,7 +271,9 @@ impl Processor {
 			ProcessorKind::Remote(remote) => {
 				client::check_response(remote, method, backends, body, req_ctx, client).await
 			},
-			ProcessorKind::Regex(rp) => regex::run_response(rp, method, body),
+			ProcessorKind::Regex(rp) => {
+				regex::run_response(rp, method, body, req_ctx.headers(), client).await
+			},
 		}
 	}
 }
