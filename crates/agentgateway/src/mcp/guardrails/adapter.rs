@@ -168,8 +168,7 @@ async fn filter_list(
 }
 
 enum Drive<T> {
-	/// Driver rejected, errored fail-closed, or returned a mismatched message
-	/// count; short-circuit with this outcome.
+	/// Short-circuit with this outcome (rejected, or couldn't evaluate).
 	ShortCircuit(Outcome<T>),
 	/// Driver allowed (possibly after masking); proceed to splice / drop.
 	Allowed,
@@ -195,8 +194,10 @@ fn after_drive<T>(
 	}
 	match outcome {
 		Ok(GuardrailOutcome::Rejected(_)) => Drive::ShortCircuit(Outcome::Reject(on_reject.clone())),
-		Ok(GuardrailOutcome::Masked | GuardrailOutcome::None | GuardrailOutcome::FailOpen) => {
-			Drive::Allowed
+		Ok(GuardrailOutcome::Masked | GuardrailOutcome::None) => Drive::Allowed,
+		// Ignore the driver's fail-open; the processor's failure_mode is authoritative.
+		Ok(GuardrailOutcome::FailOpen) => {
+			Drive::ShortCircuit(on_error(failure_mode, method, "underlying guard unavailable"))
 		},
 		Err(e) => Drive::ShortCircuit(on_error(failure_mode, method, &format!("guard error: {e}"))),
 	}
@@ -346,5 +347,37 @@ impl ResponseType for McpAdapter {
 	}
 	fn serialize(&self) -> serde_json::Result<Vec<u8>> {
 		serde_json::to_vec(&self.current)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn reject() -> ErrorData {
+		ErrorData::new(ErrorCode::INTERNAL_ERROR, "rejected", None)
+	}
+
+	#[test]
+	fn fail_open_outcome_defers_to_processor_failure_mode() {
+		let adapter = McpAdapter::new(vec![]);
+
+		let closed = after_drive::<ServerResult>(
+			Ok(GuardrailOutcome::FailOpen),
+			&adapter,
+			&reject(),
+			FailureMode::FailClosed,
+			"tools/call",
+		);
+		assert!(matches!(closed, Drive::ShortCircuit(Outcome::Reject(_))));
+
+		let open = after_drive::<ServerResult>(
+			Ok(GuardrailOutcome::FailOpen),
+			&adapter,
+			&reject(),
+			FailureMode::FailOpen,
+			"tools/call",
+		);
+		assert!(matches!(open, Drive::ShortCircuit(Outcome::Pass)));
 	}
 }
