@@ -23,7 +23,7 @@ mod azure_content_safety;
 mod bedrock_guardrails;
 mod google_model_armor;
 mod moderation;
-pub(crate) mod pii;
+mod pii;
 pub mod streaming_guardrails;
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -268,7 +268,7 @@ impl PromptGuardStreamingMode {
 	}
 }
 
-pub(crate) enum GuardrailOutcome {
+enum GuardrailOutcome {
 	None,
 	Masked,
 	Rejected(Response),
@@ -714,7 +714,7 @@ impl Policy {
 	/// This is the single place where every `RequestGuardKind` is dispatched,
 	/// so both the HTTP request path (`apply_prompt_guard`) and the realtime
 	/// WebSocket path (`apply_realtime_request_guards`) stay in sync.
-	pub(crate) async fn apply_single_request_guard(
+	async fn apply_single_request_guard(
 		guard: &RequestGuard,
 		req: &mut dyn RequestType,
 		http_headers: &HeaderMap,
@@ -1313,7 +1313,7 @@ impl Policy {
 		Ok(None)
 	}
 
-	pub(crate) async fn apply_single_response_guard(
+	async fn apply_single_response_guard(
 		guard: &ResponseGuard,
 		resp: &mut dyn ResponseType,
 		http_headers: &HeaderMap,
