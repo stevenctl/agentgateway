@@ -309,12 +309,12 @@ fn on_grpc_error<T>(
 	rpc: &str,
 	status: tonic::Status,
 ) -> Outcome<T> {
-	debug!(method, ?backends, rpc, code = ?status.code(), message = %status.message(), "mcpGuardrails: gRPC error");
+	warn!(method, ?backends, rpc, code = ?status.code(), message = %status.message(), "mcpGuardrails: gRPC error");
 	match remote.failure_mode {
 		FailureMode::FailOpen => Outcome::Pass,
 		FailureMode::FailClosed => Outcome::Reject(ErrorData::new(
 			ErrorCode::INTERNAL_ERROR,
-			format!("mcpGuardrails {rpc} failed: {}", status.message()),
+			"mcpGuardrails processor unavailable",
 			None,
 		)),
 	}
@@ -336,7 +336,7 @@ fn on_protocol_violation<T>(
 		FailureMode::FailOpen => Outcome::Pass,
 		FailureMode::FailClosed => Outcome::Reject(ErrorData::new(
 			ErrorCode::INTERNAL_ERROR,
-			format!("mcpGuardrails protocol violation: {reason}"),
+			"mcpGuardrails processor error",
 			None,
 		)),
 	}

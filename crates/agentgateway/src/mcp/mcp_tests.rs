@@ -3814,11 +3814,7 @@ async fn mcp_guardrails_fail_closed_on_grpc_error() {
 		rmcp::model::ErrorCode::INTERNAL_ERROR,
 		"gRPC failure should map to internal error"
 	);
-	assert!(
-		e.message.contains("mcpGuardrails checkRequest failed"),
-		"unexpected message: {}",
-		e.message
-	);
+	assert_eq!(e.message.as_ref(), "mcpGuardrails processor unavailable");
 }
 
 #[tokio::test]
@@ -3920,11 +3916,7 @@ async fn mcp_guardrails_protocol_violation_fails_closed() {
 		rmcp::model::ErrorCode::INTERNAL_ERROR,
 		"protocol violation should map to internal error"
 	);
-	assert!(
-		e.message.contains("protocol violation"),
-		"unexpected message: {}",
-		e.message
-	);
+	assert_eq!(e.message.as_ref(), "mcpGuardrails processor error");
 }
 
 #[tokio::test]
@@ -3965,11 +3957,7 @@ async fn mcp_guardrails_non_object_mutation_is_protocol_violation() {
 	let rmcp::ServiceError::McpError(e) = &err else {
 		panic!("expected McpError, got {err:?}");
 	};
-	assert!(
-		e.message.contains("protocol violation"),
-		"unexpected message: {}",
-		e.message
-	);
+	assert_eq!(e.message.as_ref(), "mcpGuardrails processor error");
 }
 
 #[tokio::test]

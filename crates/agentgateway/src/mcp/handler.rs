@@ -922,7 +922,7 @@ async fn apply_guardrails_response_intercept(
 			// matching the request side's handling of serialize failures.
 			tracing::warn!(error = %e, "mcpGuardrails: failed to serialize result for inspection");
 			return Some(ServerJsonRpcMessage::error(
-				ErrorData::internal_error(format!("mcpGuardrails: serialize result: {e}"), None),
+				ErrorData::internal_error("mcpGuardrails processor error", None),
 				resp.id.clone(),
 			));
 		},

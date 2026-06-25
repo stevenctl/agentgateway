@@ -1,13 +1,3 @@
-//! Bridge between MCP guardrails and the LLM guardrail drivers.
-//!
-//! [`McpAdapter`] presents extracted MCP text as an LLM `RequestType` /
-//! `ResponseType`, so any `Policy::apply_single_*_guard` driver runs unchanged.
-//! The driver's `GuardrailOutcome` maps to the MCP [`Outcome`]: `Rejected`
-//! becomes the caller's JSON-RPC error (the LLM `RequestRejection` it carries is
-//! unused on this path), masked text is spliced back, and the body is
-//! reserialized to the typed response. List responses are filtered per-entry; a
-//! `Rejected` blocks the whole response.
-
 use std::collections::HashSet;
 
 use bytes::Bytes;
@@ -70,10 +60,8 @@ pub(crate) async fn run_request_guard<P: DeserializeOwned>(
 	}
 }
 
-/// Run one response-side LLM guard over the editable text of an MCP response
-/// body. List responses are filtered per-entry; everything else is spliced in
-/// place. Response-side LLM guards take no `claims` (the LLM dispatch hardcodes
-/// `None`), so this runner doesn't accept one.
+/// Run one response-side LLM guard over the editable text of an MCP response body.
+/// List responses are filtered per-entry; others are masked in place.
 pub(crate) async fn run_response_guard(
 	guard: &ResponseGuard,
 	method: &str,
@@ -195,10 +183,11 @@ fn after_drive<T>(
 	match outcome {
 		Ok(GuardrailOutcome::Rejected(_)) => Drive::ShortCircuit(Outcome::Reject(on_reject.clone())),
 		Ok(GuardrailOutcome::Masked | GuardrailOutcome::None) => Drive::Allowed,
-		// Ignore the driver's fail-open; the processor's failure_mode is authoritative.
-		Ok(GuardrailOutcome::FailOpen) => {
-			Drive::ShortCircuit(on_error(failure_mode, method, "underlying guard unavailable"))
-		},
+		Ok(GuardrailOutcome::FailOpen) => Drive::ShortCircuit(on_error(
+			failure_mode, // prefer the MCP processor's failure mode over the driver's
+			method,
+			"underlying guard unavailable",
+		)),
 		Err(e) => Drive::ShortCircuit(on_error(failure_mode, method, &format!("guard error: {e}"))),
 	}
 }
@@ -232,7 +221,7 @@ pub(crate) fn on_error<T>(failure_mode: FailureMode, method: &str, reason: &str)
 			tracing::warn!(method, reason, "mcpGuardrails: processor failing closed");
 			Outcome::Reject(ErrorData::new(
 				ErrorCode::INTERNAL_ERROR,
-				format!("mcpGuardrails processor error: {reason}"),
+				"mcpGuardrails processor error",
 				None,
 			))
 		},

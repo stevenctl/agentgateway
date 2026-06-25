@@ -50,7 +50,7 @@ pub enum Outcome<T> {
 	Reject(rmcp::model::ErrorData),
 }
 
-const DEFAULT_REJECTION: &str = "Request blocked by guardrail policy";
+const DEFAULT_REJECTION: &str = "MCP call blocked by guardrail policy";
 
 /// MCP-shaped rejection config: the JSON-RPC error returned to the client when a
 /// processor rejects under `action: reject`. Shared across processor variants —

@@ -192,7 +192,8 @@ rejection:
 
 	#[tokio::test]
 	async fn request_reject_returns_error() {
-		let rp = ssn_processor(Action::Reject);
+		let mut rp = ssn_processor(Action::Reject);
+		rp.rejection.message = Some("blocked SSN".to_string());
 		let params = json!({"name": "echo", "arguments": {"note": "123-45-6789"}});
 		let mut bytes: Bytes = serde_json::to_vec(&params).unwrap().into();
 		let Outcome::Reject(err) =
@@ -201,6 +202,7 @@ rejection:
 			panic!("expected reject");
 		};
 		assert_eq!(err.code, client::PERMISSION_DENIED);
+		assert_eq!(err.message.as_ref(), "blocked SSN");
 	}
 
 	#[tokio::test]
