@@ -1,9 +1,9 @@
 use bytes::Bytes;
-use rmcp::model::{ErrorCode, ErrorData, ServerResult};
+use rmcp::model::ServerResult;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::payload::{self, VisitOutcome};
+use super::payload::{self, on_error, reserialize, VisitOutcome};
 use super::{FailureMode, McpRejection, Outcome};
 use crate::llm::policy::{Policy, RegexResult, RegexRules};
 use crate::*;
@@ -92,31 +92,6 @@ fn mask_string(text: &mut String, rules: &RegexRules) -> VisitOutcome {
 			VisitOutcome::Mutated
 		},
 		TextDecision::Reject => VisitOutcome::Rejected,
-	}
-}
-
-fn reserialize<P: DeserializeOwned>(value: &Value) -> Option<(P, Bytes)> {
-	let bytes: Bytes = serde_json::to_vec(value).ok()?.into();
-	let parsed = serde_json::from_slice::<P>(&bytes)
-		.inspect_err(|error| tracing::warn!(%error, "mcpGuardrails: re-encode failed to parse"))
-		.ok()?;
-	Some((parsed, bytes))
-}
-
-fn on_error<T>(failure_mode: FailureMode, method: &str, reason: &str) -> Outcome<T> {
-	match failure_mode {
-		FailureMode::FailOpen => {
-			tracing::warn!(method, reason, "mcpGuardrails: processor failing open");
-			Outcome::Pass
-		},
-		FailureMode::FailClosed => {
-			tracing::warn!(method, reason, "mcpGuardrails: processor failing closed");
-			Outcome::Reject(ErrorData::new(
-				ErrorCode::INTERNAL_ERROR,
-				"mcpGuardrails processor error",
-				None,
-			))
-		},
 	}
 }
 

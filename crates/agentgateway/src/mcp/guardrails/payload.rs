@@ -1,4 +1,5 @@
 use serde_json::Value;
+use bytes::Bytes;
 
 use super::methods;
 
@@ -158,4 +159,35 @@ fn drop_matching(value: &mut Value, list_key: &str, leaf: Leaf) -> VisitOutcome 
 		},
 	});
 	outcome
+}
+
+/// Re-encode a mutated JSON body and re-parse it into the typed value the proxy
+/// expects. Shared by the in-process processors (`regex`, `llm`).
+pub(crate) fn reserialize<P: serde::de::DeserializeOwned>(
+	value: &serde_json::Value,
+) -> Option<(P, Bytes)> {
+	let bytes: Bytes = serde_json::to_vec(value).ok()?.into();
+	let parsed = serde_json::from_slice::<P>(&bytes)
+		.inspect_err(|error| tracing::warn!(%error, "mcpGuardrails: re-encode failed to parse"))
+		.ok()?;
+	Some((parsed, bytes))
+}
+
+/// Honor a processor's failure mode when a body can't be decoded/re-encoded or a
+/// driver errors. Shared by the in-process processors (`regex`, `llm`).
+pub(crate) fn on_error<T>(failure_mode: FailureMode, method: &str, reason: &str) -> Outcome<T> {
+	match failure_mode {
+		FailureMode::FailOpen => {
+			tracing::warn!(method, reason, "mcpGuardrails: processor failing open");
+			Outcome::Pass
+		},
+		FailureMode::FailClosed => {
+			tracing::warn!(method, reason, "mcpGuardrails: processor failing closed");
+			Outcome::Reject(rmcp::model::ErrorData::new(
+				rmcp::model::ErrorCode::INTERNAL_ERROR,
+				"mcpGuardrails processor error",
+				None,
+			))
+		},
+	}
 }
