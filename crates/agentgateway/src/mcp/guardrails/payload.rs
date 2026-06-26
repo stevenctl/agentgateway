@@ -2,6 +2,7 @@ use serde_json::Value;
 use bytes::Bytes;
 
 use super::methods;
+use super::{FailureMode, Outcome};
 
 /// What a leaf visit decided. Merges up the tree; `Rejected` short-circuits.
 #[derive(Clone, Copy, Eq, PartialEq)]
