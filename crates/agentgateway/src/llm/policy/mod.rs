@@ -24,6 +24,7 @@ fn with_default_timeout(mut req: crate::http::Request) -> crate::http::Request {
 	req
 }
 
+pub mod headroom;
 pub mod webhook;
 
 mod azure_content_safety;
@@ -147,6 +148,9 @@ pub struct Policy {
 	/// Prompt caching settings for providers that support cache markers.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prompt_caching: Option<PromptCachingConfig>,
+	/// Headroom context-compression settings.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub headroom: Option<Headroom>,
 	/// Route type overrides selected by request path suffix.
 	#[serde(default, skip_serializing_if = "SortedRoutes::is_empty")]
 	#[cfg_attr(
@@ -1503,6 +1507,130 @@ pub enum FailureMode {
 	/// Allow the request through when the webhook guardrail is unavailable.
 	#[serde(rename = "failOpen")]
 	FailOpen,
+}
+
+/// Headroom compresses context before it hits LLMs in an attempt to reduce cost.
+#[apply(schema!)]
+pub struct Headroom {
+	/// Backend for the Headroom instance (serves `/v1/compress` and `/v1/retrieve`).
+	pub target: SimpleBackendReference,
+	/// Compression behavior
+	/// TODO add CCR mode
+	#[serde(default)]
+	pub mode: HeadroomMode,
+	/// Behavior when the headroom is unreachable or errors. Defaults to `failOpen`
+	/// (compression is an optimization; a headroom issue should not drop LLM traffic).
+	#[serde(default = "headroom_default_failure_mode")]
+	pub failure_mode: FailureMode,
+}
+
+#[apply(schema!)]
+#[derive(Default, Copy, PartialEq, Eq)]
+pub enum HeadroomMode {
+	/// Round-trip request messages through `/v1/compress`.
+	#[default]
+	#[serde(rename = "compress")]
+	Compress,
+	// TODO add CCR mode which injects tools for recovering lost context
+	// #[serde(rename = "ccr")]
+	// Ccr,
+}
+
+fn headroom_default_failure_mode() -> FailureMode {
+	FailureMode::FailOpen
+}
+
+pub enum HeadroomOutcome {
+	/// Explicitly bypassed or unsupported request.
+	Bypass,
+	/// Compression succeeded; `messages` is not yet applied to the request, and `original`
+	/// is the pre-compression snapshot for reverting on a downstream failure.
+	Compressed {
+		original: Vec<serde_json::Value>,
+		messages: Vec<serde_json::Value>,
+	},
+	/// Compression failed; carries the reason.
+	Failed(String),
+}
+
+impl Headroom {
+	pub async fn compress_request(
+		&self,
+		backend_info: &auth::BackendInfo,
+		req: &mut dyn RequestType,
+		parts: &mut ::http::request::Parts,
+	) -> HeadroomOutcome {
+		// TODO: add CCR support
+		// match self.mode {
+		// 	HeadroomMode::Compress => {},
+		// 	HeadroomMode::Ccr => todo!("headroom ccr mode"),
+		// }
+
+		// per-request opt-out
+		let bypass = parts
+			.headers
+			.remove(headroom::BYPASS_HEADER)
+			.is_some_and(|v| v.to_str().is_ok_and(|v| v.eq_ignore_ascii_case("true")));
+		if bypass {
+			tracing::debug!("headroom: bypass header set; skipping compression");
+			return HeadroomOutcome::Bypass;
+		}
+
+		// skip reqs with no message array (embeddings, rerank, count_tokens, detect)
+		let Some(original) = req.raw_messages() else {
+			tracing::debug!("headroom: request format has no message array; skipping");
+			return HeadroomOutcome::Bypass;
+		};
+
+		let model = req.model().clone();
+		tracing::debug!("headroom: compressing request model={model:?}");
+		let client = PolicyClient::new(backend_info.inputs.clone());
+		let buffer_limit = parts.extensions.get::<transport::BufferLimit>().cloned();
+		let compressed = match headroom::compress(
+			&client,
+			&self.target,
+			&original,
+			model.as_deref(),
+			buffer_limit,
+		)
+		.await
+		{
+			Ok(resp) => resp,
+			Err(e) => return HeadroomOutcome::Failed(format!("compress call failed: {e}")),
+		};
+
+		if (compressed.messages.is_empty() && !original.is_empty())
+			|| compressed.messages.iter().any(|m| !m.is_object())
+		{
+			return HeadroomOutcome::Failed(
+				"sidecar returned an empty or malformed message array".into(),
+			);
+		}
+		HeadroomOutcome::Compressed {
+			original,
+			messages: compressed.messages,
+		}
+	}
+
+	/// Resolve a compression failure per the configured mode: fail-open proceeds without
+	/// compression, fail-closed rejects the request.
+	pub fn fail<T>(&self, reason: &str) -> Result<Option<T>, Response> {
+		match self.failure_mode {
+			FailureMode::FailOpen => {
+				info!("headroom: {reason}; failing open");
+				Ok(None)
+			},
+			FailureMode::FailClosed => {
+				warn!("headroom: {reason}; failing closed");
+				Err(
+					::http::response::Builder::new()
+						.status(StatusCode::INTERNAL_SERVER_ERROR)
+						.body(http::Body::from("headroom compression failed"))
+						.expect("static response should build"),
+				)
+			},
+		}
+	}
 }
 
 #[apply(schema!)]

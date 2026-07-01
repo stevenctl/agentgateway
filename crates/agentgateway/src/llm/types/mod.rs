@@ -41,6 +41,20 @@ pub trait RequestType: Send + Sync {
 	fn get_messages(&self) -> Vec<SimpleChatCompletionMessage>;
 	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>);
 
+	/// Native request messages as a list of raw JSON objects, preserving cache_control, images,
+	/// and tool blocks. Returns `None` for formats that don't expose a message array.
+	fn raw_messages(&self) -> Option<Vec<serde_json::Value>> {
+		None
+	}
+
+	/// Replace the native request messages from a list of raw JSON objects. Only meaningful for
+	/// formats where `raw_messages` returns `Some`; returns `Err` (leaving `self` unchanged) if
+	/// the messages don't fit the format.
+	fn set_raw_messages(&mut self, messages: Vec<serde_json::Value>) -> anyhow::Result<()> {
+		let _ = messages;
+		anyhow::bail!("raw message replacement is not supported for this request format")
+	}
+
 	fn to_openai(&self) -> Result<Vec<u8>, AIError> {
 		Err(AIError::UnsupportedConversion(strng::literal!("openai")))
 	}

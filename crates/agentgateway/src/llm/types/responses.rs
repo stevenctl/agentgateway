@@ -380,6 +380,22 @@ impl RequestType for Request {
 		);
 	}
 
+	fn raw_messages(&self) -> Option<Vec<serde_json::Value>> {
+		// Items are already JSON values; clone each inner value once (we must return owned)
+		// rather than cloning the Vec and then re-serializing each item.
+		Some(match &self.input {
+			RequestInput::Items(items) => items.iter().map(|i| i.0.clone()).collect(),
+			RequestInput::Text(text) => vec![RawInputItem::from_user_text(text.clone()).0],
+		})
+	}
+
+	fn set_raw_messages(&mut self, messages: Vec<serde_json::Value>) -> anyhow::Result<()> {
+		// Always restore as Items (a Text input is sugar for one user message): compression
+		// may merge or split messages, so we can't assume the original shape or count.
+		self.input = RequestInput::Items(messages.into_iter().map(RawInputItem).collect());
+		Ok(())
+	}
+
 	fn to_openai(&self) -> Result<Vec<u8>, AIError> {
 		// Passthrough - just serialize
 		serde_json::to_vec(&self).map_err(AIError::RequestMarshal)
@@ -581,5 +597,34 @@ pub mod typed {
 		/// Emitted when an error occurs.
 		#[serde(rename = "error")]
 		ResponseError(openai_responses::ResponseErrorEvent),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use serde_json::json;
+
+	use super::{Request, RequestInput};
+	use crate::llm::RequestType;
+
+	// Items round-trip with full fidelity, including non-message items.
+	#[test]
+	fn raw_messages_round_trip() {
+		let mut req: Request = serde_json::from_value(json!({ "input": [
+			{ "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+			{ "type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}" }
+		], "model": "gpt-4o" }))
+		.unwrap();
+
+		let raw = req.raw_messages().unwrap();
+		assert_eq!(raw.len(), 2);
+
+		req.set_raw_messages(raw).unwrap();
+		let RequestInput::Items(items) = &req.input else {
+			panic!("expected Items");
+		};
+		let second = serde_json::to_value(&items[1]).unwrap();
+		assert_eq!(second["type"], "function_call");
+		assert_eq!(second["call_id"], "c1");
 	}
 }

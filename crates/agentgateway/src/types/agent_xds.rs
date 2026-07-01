@@ -945,6 +945,8 @@ fn convert_backend_ai_policy(
 			.map(|(k, v)| (strng::new(k), strng::new(v)))
 			.collect(),
 		wildcard_patterns: Arc::new(Vec::new()), // Will be populated by compile_model_alias_patterns()
+		// TODO proto config for xds headroom config
+		headroom: None,
 		prompt_caching: ai.prompt_caching.as_ref().map(convert_prompt_caching),
 		routes: ai
 			.routes

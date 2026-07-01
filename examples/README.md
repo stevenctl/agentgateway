@@ -47,6 +47,10 @@ The `http` example shows how to use agentgateway to serve generic HTTP traffic.
 
 The `prompt-enrichment` example shows how to append or preprend prompts to agentgateway AI requests.
 
+### [Headroom Context Compression](headroom/README.md)
+
+The `headroom` example shows how to compress LLM request context through a Headroom sidecar to reduce token usage on long-context requests.
+
 ### [Standalone EPP](standalone-epp/README.md)
 
 The `standalone-epp` example shows the v1 local config shape for running agentgateway as the sidecar proxy

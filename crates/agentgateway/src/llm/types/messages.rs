@@ -252,6 +252,24 @@ impl RequestType for Request {
 		self.messages = message_prompts.into_iter().map(Into::into).collect();
 	}
 
+	// Compress only the message array; `system` is left untouched (it's the stable prefix
+	// Headroom's cache mode would freeze anyway, and stays out of the compressed payload).
+	fn raw_messages(&self) -> Option<Vec<serde_json::Value>> {
+		self
+			.messages
+			.iter()
+			.map(|m| serde_json::to_value(m).ok())
+			.collect()
+	}
+
+	fn set_raw_messages(&mut self, messages: Vec<serde_json::Value>) -> anyhow::Result<()> {
+		self.messages = messages
+			.into_iter()
+			.map(serde_json::from_value)
+			.collect::<Result<_, _>>()?;
+		Ok(())
+	}
+
 	fn to_openai(&self) -> Result<Vec<u8>, AIError> {
 		conversion::completions::from_messages::translate(self)
 	}

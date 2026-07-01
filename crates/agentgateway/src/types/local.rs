@@ -17,7 +17,7 @@ use crate::http::auth::BackendAuth;
 use crate::http::backendtls::{LocalBackendTLS, ResolvedBackendTLS};
 use crate::http::transformation_cel::{LocalTransformationConfig, Transformation};
 use crate::http::{filters, health, retry, timeout, transformation_cel};
-use crate::llm::policy::{PromptCachingConfig, PromptGuard};
+use crate::llm::policy::{Headroom, PromptCachingConfig, PromptGuard};
 use crate::llm::{AIBackend, AIProvider, NamedAIProvider, anthropic, copilot, custom, openai};
 use crate::mcp::{FailureMode, McpAuthorization};
 use crate::store::{LocalWorkload, RequestPolicy};
@@ -389,6 +389,8 @@ pub struct LocalLLMProviderDefaults {
 	backend_tunnel: Option<backend::Tunnel>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	prompt_caching: Option<PromptCachingConfig>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	headroom: Option<Headroom>,
 }
 
 #[apply(schema_de!)]
@@ -709,6 +711,9 @@ pub struct LocalLLMModels {
 	/// promptCaching configures cache point insertion for supported LLM providers.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	prompt_caching: Option<PromptCachingConfig>,
+	/// headroom configures the context-compression sidecar.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	headroom: Option<Headroom>,
 
 	/// matches specifies the conditions under which this model should be used in addition to matching the model name.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -873,6 +878,7 @@ impl LocalLLMModels {
 			self.health = self.health.take().or(defaults.health);
 			self.backend_tunnel = self.backend_tunnel.take().or(defaults.backend_tunnel);
 			self.prompt_caching = self.prompt_caching.take().or(defaults.prompt_caching);
+			self.headroom = self.headroom.take().or(defaults.headroom);
 		}
 		Ok(())
 	}
@@ -3272,6 +3278,7 @@ async fn convert_llm_config(
 			model_aliases: Default::default(),
 			wildcard_patterns: Arc::new(vec![]),
 			prompt_caching: model_config.prompt_caching.clone(),
+			headroom: model_config.headroom.clone(),
 			routes: Default::default(),
 		})));
 		let resolved_inline_policies = pols.clone();

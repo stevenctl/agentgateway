@@ -1136,6 +1136,21 @@ impl AIProvider {
 			}
 		}
 
+		let maybe_compressed_body = match self
+			.apply_headroom(
+				policies,
+				backend_info,
+				&mut req,
+				&mut parts,
+				original_format,
+				native_format,
+			)
+			.await
+		{
+			Ok(body) => body,
+			Err(rejection) => return Ok(RequestResult::Rejected(rejection)),
+		};
+
 		let mut llm_info = req.to_llm_request(self.provider(), tokenize)?;
 		if original_format == InputFormat::Detect {
 			types::detect::amend_request_info(&mut llm_info, parts.uri.path());
@@ -1173,76 +1188,21 @@ impl AIProvider {
 					)));
 				},
 			}
+		} else if let Some((body, provider_state)) = maybe_compressed_body {
+			// compression has to marshal as part of validation, do not re-marshal
+			llm_info.provider_state = provider_state;
+			body
 		} else {
-			match self {
-				AIProvider::Custom(_) => match (original_format, native_format) {
-					(_, None) => req.to_openai()?,
-					(InputFormat::Completions, Some(custom::ProviderFormat::Completions))
-					| (InputFormat::Embeddings, Some(custom::ProviderFormat::Embeddings))
-					| (InputFormat::Rerank, Some(custom::ProviderFormat::Rerank))
-					| (InputFormat::Messages, Some(custom::ProviderFormat::Completions))
-					| (InputFormat::Responses, Some(custom::ProviderFormat::Responses)) => req.to_openai()?,
-					(InputFormat::Completions, Some(custom::ProviderFormat::Messages))
-					| (InputFormat::Messages, Some(custom::ProviderFormat::Messages)) => req.to_anthropic()?,
-					(InputFormat::Responses, Some(custom::ProviderFormat::Completions)) => {
-						req.to_openai_chat_completions()?
-					},
-					(InputFormat::CountTokens | InputFormat::Realtime, _) => {
-						return Err(AIError::UnsupportedConversion(strng::literal!(
-							"this request format does not use this codepath"
-						)));
-					},
-					(_, Some(unsupported)) => {
-						return Err(AIError::UnsupportedConversion(strng::format!(
-							"unsupported custom native format {unsupported:?}"
-						)));
-					},
-				},
-				AIProvider::OpenAI(_) | AIProvider::Copilot(_) => req.to_openai()?,
-				AIProvider::Azure(p) => {
-					if matches!(p.resource_type, azure::AzureResourceType::Foundry)
-						&& p.is_anthropic_model(Some(request_model))
-					{
-						// Foundry's Anthropic-native endpoint requires the Anthropic wire format,
-						// but only for Claude models; GPT models use the OpenAI completions format.
-						match original_format {
-							InputFormat::Messages | InputFormat::CountTokens => req.to_anthropic()?,
-							_ => req.to_openai()?,
-						}
-					} else {
-						req.to_openai()?
-					}
-				},
-				AIProvider::Vertex(p) => {
-					if p.is_anthropic_model(Some(request_model)) {
-						let body = req.to_anthropic()?;
-						p.prepare_anthropic_message_body(body)?
-					} else {
-						req.to_vertex(p)?
-					}
-				},
-				AIProvider::Gemini(_) => {
-					if original_format == InputFormat::Responses {
-						req.to_openai_chat_completions()?
-					} else {
-						req.to_openai()?
-					}
-				},
-				AIProvider::Anthropic(_) => req.to_anthropic()?,
-				AIProvider::Bedrock(p) => {
-					let bedrock = req.to_bedrock(
-						p,
-						Some(&parts.headers),
-						policies.and_then(|p| p.prompt_caching.as_ref()),
-					)?;
-					if !bedrock.tool_name_map.is_empty() {
-						llm_info.provider_state = Some(ProviderState::Bedrock {
-							tool_names: Arc::new(bedrock.tool_name_map),
-						});
-					}
-					bedrock.body
-				},
-			}
+			let (body, provider_state) = self.marshal_request(
+				&req,
+				&parts.headers,
+				original_format,
+				native_format,
+				request_model,
+				policies,
+			)?;
+			llm_info.provider_state = provider_state;
+			body
 		};
 
 		parts.extensions.insert(llm_info.clone());
@@ -1250,6 +1210,133 @@ impl AIProvider {
 		parts.headers.remove(header::CONTENT_LENGTH);
 		let req = Request::from_parts(parts, Body::from(new_request));
 		Ok(RequestResult::Success(req, llm_info))
+	}
+
+	async fn apply_headroom(
+		&self,
+		policies: Option<&Policy>,
+		backend_info: &crate::http::auth::BackendInfo,
+		req: &mut dyn RequestType,
+		parts: &mut ::http::request::Parts,
+		original_format: InputFormat,
+		native_format: Option<custom::ProviderFormat>,
+	) -> Result<Option<(Vec<u8>, Option<ProviderState>)>, Response> {
+		let Some(hr) = policies.and_then(|p| p.headroom.as_ref()) else {
+			return Ok(None);
+		};
+		// no need to compress token counting, we want the original in that case
+		if original_format == InputFormat::CountTokens {
+			return Ok(None);
+		}
+		let original = match hr.compress_request(backend_info, req, parts).await {
+			policy::HeadroomOutcome::Bypass => return Ok(None),
+			policy::HeadroomOutcome::Failed(reason) => return hr.fail(&reason),
+			policy::HeadroomOutcome::Compressed { original, messages } => {
+				if let Err(e) = req.set_raw_messages(messages) {
+					return hr.fail(&format!("headroom returned unusable messages: {e}"));
+				}
+				original
+			},
+		};
+		let model = req.model().clone().unwrap_or_default();
+		match self.marshal_request(
+			req,
+			&parts.headers,
+			original_format,
+			native_format,
+			&model,
+			policies,
+		) {
+			Ok(marshaled) => Ok(Some(marshaled)),
+			Err(e) => {
+				// revert so the fail-open marshal doesn't hit the same error
+				let _ = req.set_raw_messages(original);
+				hr.fail(&format!("compressed request failed to marshal: {e}"))
+			},
+		}
+	}
+
+	/// Marshal a (non-count_tokens) request into the provider's wire format.
+	fn marshal_request(
+		&self,
+		req: &dyn RequestType,
+		headers: &::http::HeaderMap,
+		original_format: InputFormat,
+		native_format: Option<custom::ProviderFormat>,
+		request_model: &str,
+		policies: Option<&Policy>,
+	) -> Result<(Vec<u8>, Option<ProviderState>), AIError> {
+		let mut provider_state = None;
+		let body = match self {
+			AIProvider::Custom(_) => match (original_format, native_format) {
+				(_, None) => req.to_openai()?,
+				(InputFormat::Completions, Some(custom::ProviderFormat::Completions))
+				| (InputFormat::Embeddings, Some(custom::ProviderFormat::Embeddings))
+				| (InputFormat::Rerank, Some(custom::ProviderFormat::Rerank))
+				| (InputFormat::Messages, Some(custom::ProviderFormat::Completions))
+				| (InputFormat::Responses, Some(custom::ProviderFormat::Responses)) => req.to_openai()?,
+				(InputFormat::Completions, Some(custom::ProviderFormat::Messages))
+				| (InputFormat::Messages, Some(custom::ProviderFormat::Messages)) => req.to_anthropic()?,
+				(InputFormat::Responses, Some(custom::ProviderFormat::Completions)) => {
+					req.to_openai_chat_completions()?
+				},
+				(InputFormat::CountTokens | InputFormat::Realtime, _) => {
+					return Err(AIError::UnsupportedConversion(strng::literal!(
+						"this request format does not use this codepath"
+					)));
+				},
+				(_, Some(unsupported)) => {
+					return Err(AIError::UnsupportedConversion(strng::format!(
+						"unsupported custom native format {unsupported:?}"
+					)));
+				},
+			},
+			AIProvider::OpenAI(_) | AIProvider::Copilot(_) => req.to_openai()?,
+			AIProvider::Azure(p) => {
+				if matches!(p.resource_type, azure::AzureResourceType::Foundry)
+					&& p.is_anthropic_model(Some(request_model))
+				{
+					// Foundry's Anthropic-native endpoint requires the Anthropic wire format,
+					// but only for Claude models; GPT models use the OpenAI completions format.
+					match original_format {
+						InputFormat::Messages | InputFormat::CountTokens => req.to_anthropic()?,
+						_ => req.to_openai()?,
+					}
+				} else {
+					req.to_openai()?
+				}
+			},
+			AIProvider::Vertex(p) => {
+				if p.is_anthropic_model(Some(request_model)) {
+					let body = req.to_anthropic()?;
+					p.prepare_anthropic_message_body(body)?
+				} else {
+					req.to_vertex(p)?
+				}
+			},
+			AIProvider::Gemini(_) => {
+				if original_format == InputFormat::Responses {
+					req.to_openai_chat_completions()?
+				} else {
+					req.to_openai()?
+				}
+			},
+			AIProvider::Anthropic(_) => req.to_anthropic()?,
+			AIProvider::Bedrock(p) => {
+				let bedrock = req.to_bedrock(
+					p,
+					Some(headers),
+					policies.and_then(|p| p.prompt_caching.as_ref()),
+				)?;
+				if !bedrock.tool_name_map.is_empty() {
+					provider_state = Some(ProviderState::Bedrock {
+						tool_names: Arc::new(bedrock.tool_name_map),
+					});
+				}
+				bedrock.body
+			},
+		};
+		Ok((body, provider_state))
 	}
 
 	#[allow(clippy::too_many_arguments)]

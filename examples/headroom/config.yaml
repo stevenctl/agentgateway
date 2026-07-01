@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# Headroom context-compression example.
+#
+# Run a Headroom sidecar alongside the gateway to compress request context before it
+# reaches the LLM:
+#
+#   headroom proxy --port 8787 --mode cache
+#
+# The gateway POSTs each request's messages to the sidecar's /v1/compress endpoint and
+# forwards the compressed result upstream. Send `x-headroom-bypass: true` to skip
+# compression for a request. If the sidecar is unreachable, `failureMode: failOpen`
+# (the default) forwards the original request unchanged.
+#
+# This uses the `llm` server form (default port 4000), which matches the Claude Code
+# integration guide: https://agentgateway.dev/docs/standalone/main/integrations/llm-clients/claude-code/
+llm:
+  models:
+  - name: "*"
+    provider: anthropic
+    params:
+      apiKey: "$ANTHROPIC_API_KEY"
+    headroom:
+      target:
+        host: 127.0.0.1:8787
+      # failureMode: failOpen   # failOpen (default) | failClosed

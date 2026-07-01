@@ -504,6 +504,10 @@ impl LLMRequestPolicies {
 				.prompt_caching
 				.clone()
 				.or_else(|| fallback.prompt_caching.clone()),
+			headroom: preferred
+				.headroom
+				.clone()
+				.or_else(|| fallback.headroom.clone()),
 			routes: if preferred.routes.is_empty() {
 				fallback.routes.clone()
 			} else {
