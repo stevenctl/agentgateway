@@ -4797,7 +4797,8 @@ spec:
                               Allowed audiences that are allowed
                               access. This corresponds to the `aud` claim
                               ([RFC 7519 §4.1.3](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.3)).
-                              If unset, any audience is allowed.
+                              If unset, the token `aud` must match the advertised resource per RFC 8707
+                              (see `requireResourceAudience`).
                             items:
                               type: string
                             maxItems: 64
@@ -4929,6 +4930,13 @@ spec:
                             - Keycloak
                             - Okta
                             type: string
+                          requireResourceAudience:
+                            default: true
+                            description: |-
+                              When true (the default) and no explicit `audiences` are configured, the token `aud`
+                              must match the advertised resource (RFC 8707). Set false for IdPs that cannot bind
+                              `aud` to the resource URL (e.g. Keycloak); validation then falls back to `audiences`.
+                            type: boolean
                           resourceMetadata:
                             additionalProperties:
                               x-kubernetes-preserve-unknown-fields: true
@@ -8828,6 +8836,13 @@ spec:
                             - Keycloak
                             - Okta
                             type: string
+                          requireResourceAudience:
+                            default: true
+                            description: |-
+                              When true (the default) and no explicit provider `audiences` are configured, the token `aud`
+                              must match the advertised resource (RFC 8707). Set false for IdPs that cannot bind
+                              `aud` to the resource URL (e.g. Keycloak); validation then falls back to `audiences`.
+                            type: boolean
                           resourceMetadata:
                             additionalProperties:
                               x-kubernetes-preserve-unknown-fields: true
@@ -8852,7 +8867,9 @@ spec:
                                 Allowed audiences that are allowed
                                 access. This corresponds to the `aud` claim
                                 ([RFC 7519 §4.1.3](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.3)).
-                                If unset, any audience is allowed.
+                                If unset, any audience is allowed — except when the MCP extension (`mcp`) is
+                                configured, where an unset audiences enforces the resource audience per RFC 8707
+                                (see `JWTMCPConfig.requireResourceAudience`).
                               items:
                                 type: string
                               maxItems: 64

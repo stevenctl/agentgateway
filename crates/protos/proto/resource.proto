@@ -942,6 +942,8 @@ message TrafficPolicySpec {
       BackendPolicySpec.McpAuthentication.McpIDP provider = 1;
       BackendPolicySpec.McpAuthentication.ResourceMetadata resource_metadata = 2;
       optional string client_id = 3;
+      // See BackendPolicySpec.McpAuthentication.require_resource_audience.
+      optional bool require_resource_audience = 4;
     }
 
     // Validation mode for JWT authentication
@@ -1460,6 +1462,11 @@ message BackendPolicySpec {
     JWTValidationOptions jwt_validation_options = 7;
     AuthorizationLocation authorization_location = 8;
     optional string client_id = 9;
+    // When true (the default), and no explicit `audiences` are configured, the
+    // token's `aud` must match the advertised resource (RFC 8707). Set false to
+    // disable resource-audience enforcement (e.g. IdPs that cannot bind `aud` to
+    // the resource URL, such as Keycloak).
+    optional bool require_resource_audience = 10;
   }
 
   // McpGuardrails is a backend-phase policy for MCP traffic: an ordered chain of

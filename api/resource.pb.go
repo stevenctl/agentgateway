@@ -11275,8 +11275,10 @@ type TrafficPolicySpec_JWT_MCP struct {
 	Provider         BackendPolicySpec_McpAuthentication_McpIDP            `protobuf:"varint,1,opt,name=provider,proto3,enum=agentgateway.dev.resource.BackendPolicySpec_McpAuthentication_McpIDP" json:"provider,omitempty"`
 	ResourceMetadata *BackendPolicySpec_McpAuthentication_ResourceMetadata `protobuf:"bytes,2,opt,name=resource_metadata,json=resourceMetadata,proto3" json:"resource_metadata,omitempty"`
 	ClientId         *string                                               `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3,oneof" json:"client_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// See BackendPolicySpec.McpAuthentication.require_resource_audience.
+	RequireResourceAudience *bool `protobuf:"varint,4,opt,name=require_resource_audience,json=requireResourceAudience,proto3,oneof" json:"require_resource_audience,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *TrafficPolicySpec_JWT_MCP) Reset() {
@@ -11328,6 +11330,13 @@ func (x *TrafficPolicySpec_JWT_MCP) GetClientId() string {
 		return *x.ClientId
 	}
 	return ""
+}
+
+func (x *TrafficPolicySpec_JWT_MCP) GetRequireResourceAudience() bool {
+	if x != nil && x.RequireResourceAudience != nil {
+		return *x.RequireResourceAudience
+	}
+	return false
 }
 
 type TrafficPolicySpec_APIKey_User struct {
@@ -12275,8 +12284,13 @@ type BackendPolicySpec_McpAuthentication struct {
 	JwtValidationOptions  *JWTValidationOptions  `protobuf:"bytes,7,opt,name=jwt_validation_options,json=jwtValidationOptions,proto3" json:"jwt_validation_options,omitempty"`
 	AuthorizationLocation *AuthorizationLocation `protobuf:"bytes,8,opt,name=authorization_location,json=authorizationLocation,proto3" json:"authorization_location,omitempty"`
 	ClientId              *string                `protobuf:"bytes,9,opt,name=client_id,json=clientId,proto3,oneof" json:"client_id,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// When true (the default), and no explicit `audiences` are configured, the
+	// token's `aud` must match the advertised resource (RFC 8707). Set false to
+	// disable resource-audience enforcement (e.g. IdPs that cannot bind `aud` to
+	// the resource URL, such as Keycloak).
+	RequireResourceAudience *bool `protobuf:"varint,10,opt,name=require_resource_audience,json=requireResourceAudience,proto3,oneof" json:"require_resource_audience,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *BackendPolicySpec_McpAuthentication) Reset() {
@@ -12370,6 +12384,13 @@ func (x *BackendPolicySpec_McpAuthentication) GetClientId() string {
 		return *x.ClientId
 	}
 	return ""
+}
+
+func (x *BackendPolicySpec_McpAuthentication) GetRequireResourceAudience() bool {
+	if x != nil && x.RequireResourceAudience != nil {
+		return *x.RequireResourceAudience
+	}
+	return false
 }
 
 // McpGuardrails is a backend-phase policy for MCP traffic: an ordered chain of
@@ -15229,7 +15250,7 @@ const file_resource_proto_rawDesc = "" +
 	"\x03add\x18\x01 \x03(\v2;.agentgateway.dev.resource.FrontendPolicySpec.Metrics.FieldR\x03addB\x06\n" +
 	"\x04kind\"?\n" +
 	"\x14JWTValidationOptions\x12'\n" +
-	"\x0frequired_claims\x18\x01 \x03(\tR\x0erequiredClaims\"\xe7L\n" +
+	"\x0frequired_claims\x18\x01 \x03(\tR\x0erequiredClaims\"\xc6M\n" +
 	"\x11TrafficPolicySpec\x12N\n" +
 	"\x05phase\x18\x01 \x01(\x0e28.agentgateway.dev.resource.TrafficPolicySpec.PolicyPhaseR\x05phase\x12>\n" +
 	"\atimeout\x18\x02 \x01(\v2\".agentgateway.dev.resource.TimeoutH\x00R\atimeout\x128\n" +
@@ -15348,18 +15369,20 @@ const file_resource_proto_rawDesc = "" +
 	"\taudiences\x18\x02 \x03(\tR\taudiences\x12\x18\n" +
 	"\x06inline\x18\x03 \x01(\tH\x00R\x06inline\x12e\n" +
 	"\x16jwt_validation_options\x18\x04 \x01(\v2/.agentgateway.dev.resource.JWTValidationOptionsR\x14jwtValidationOptionsB\r\n" +
-	"\vjwks_source\x1a\xa4\x05\n" +
+	"\vjwks_source\x1a\x83\x06\n" +
 	"\x03JWT\x12I\n" +
 	"\x04mode\x18\x01 \x01(\x0e25.agentgateway.dev.resource.TrafficPolicySpec.JWT.ModeR\x04mode\x12V\n" +
 	"\tproviders\x18\x02 \x03(\v28.agentgateway.dev.resource.TrafficPolicySpec.JWTProviderR\tproviders\x12F\n" +
 	"\x03mcp\x18\x03 \x01(\v24.agentgateway.dev.resource.TrafficPolicySpec.JWT.MCPR\x03mcp\x12g\n" +
-	"\x16authorization_location\x18\x04 \x01(\v20.agentgateway.dev.resource.AuthorizationLocationR\x15authorizationLocation\x1a\x96\x02\n" +
+	"\x16authorization_location\x18\x04 \x01(\v20.agentgateway.dev.resource.AuthorizationLocationR\x15authorizationLocation\x1a\xf5\x02\n" +
 	"\x03MCP\x12a\n" +
 	"\bprovider\x18\x01 \x01(\x0e2E.agentgateway.dev.resource.BackendPolicySpec.McpAuthentication.McpIDPR\bprovider\x12|\n" +
 	"\x11resource_metadata\x18\x02 \x01(\v2O.agentgateway.dev.resource.BackendPolicySpec.McpAuthentication.ResourceMetadataR\x10resourceMetadata\x12 \n" +
-	"\tclient_id\x18\x03 \x01(\tH\x00R\bclientId\x88\x01\x01B\f\n" +
+	"\tclient_id\x18\x03 \x01(\tH\x00R\bclientId\x88\x01\x01\x12?\n" +
+	"\x19require_resource_audience\x18\x04 \x01(\bH\x01R\x17requireResourceAudience\x88\x01\x01B\f\n" +
 	"\n" +
-	"_client_id\"0\n" +
+	"_client_idB\x1c\n" +
+	"\x1a_require_resource_audience\"0\n" +
 	"\x04Mode\x12\f\n" +
 	"\bOPTIONAL\x10\x00\x12\n" +
 	"\n" +
@@ -15462,7 +15485,7 @@ const file_resource_proto_rawDesc = "" +
 	"\vPolicyPhase\x12\t\n" +
 	"\x05ROUTE\x10\x00\x12\v\n" +
 	"\aGATEWAY\x10\x01B\x06\n" +
-	"\x04kind\"\xd6X\n" +
+	"\x04kind\"\xb5Y\n" +
 	"\x11BackendPolicySpec\x12D\n" +
 	"\x03a2a\x18\x01 \x01(\v20.agentgateway.dev.resource.BackendPolicySpec.A2aH\x00R\x03a2a\x12l\n" +
 	"\x11inference_routing\x18\x02 \x01(\v2=.agentgateway.dev.resource.BackendPolicySpec.InferenceRoutingH\x00R\x10inferenceRouting\x12Z\n" +
@@ -15691,7 +15714,7 @@ const file_resource_proto_rawDesc = "" +
 	"\x10McpAuthorization\x12\x14\n" +
 	"\x05allow\x18\x01 \x03(\tR\x05allow\x12\x12\n" +
 	"\x04deny\x18\x02 \x03(\tR\x04deny\x12\x18\n" +
-	"\arequire\x18\x03 \x03(\tR\arequire\x1a\xed\a\n" +
+	"\arequire\x18\x03 \x03(\tR\arequire\x1a\xcc\b\n" +
 	"\x11McpAuthentication\x12\x16\n" +
 	"\x06issuer\x18\x01 \x01(\tR\x06issuer\x12\x1c\n" +
 	"\taudiences\x18\x02 \x03(\tR\taudiences\x12\x1f\n" +
@@ -15702,7 +15725,9 @@ const file_resource_proto_rawDesc = "" +
 	"\x04mode\x18\x06 \x01(\x0e2C.agentgateway.dev.resource.BackendPolicySpec.McpAuthentication.ModeR\x04mode\x12e\n" +
 	"\x16jwt_validation_options\x18\a \x01(\v2/.agentgateway.dev.resource.JWTValidationOptionsR\x14jwtValidationOptions\x12g\n" +
 	"\x16authorization_location\x18\b \x01(\v20.agentgateway.dev.resource.AuthorizationLocationR\x15authorizationLocation\x12 \n" +
-	"\tclient_id\x18\t \x01(\tH\x00R\bclientId\x88\x01\x01\x1a\xd6\x01\n" +
+	"\tclient_id\x18\t \x01(\tH\x00R\bclientId\x88\x01\x01\x12?\n" +
+	"\x19require_resource_audience\x18\n" +
+	" \x01(\bH\x01R\x17requireResourceAudience\x88\x01\x01\x1a\xd6\x01\n" +
 	"\x10ResourceMetadata\x12p\n" +
 	"\x05extra\x18\x01 \x03(\v2Z.agentgateway.dev.resource.BackendPolicySpec.McpAuthentication.ResourceMetadata.ExtraEntryR\x05extra\x1aP\n" +
 	"\n" +
@@ -15721,7 +15746,8 @@ const file_resource_proto_rawDesc = "" +
 	"\n" +
 	"PERMISSIVE\x10\x02B\f\n" +
 	"\n" +
-	"_client_id\x1a\xa6\b\n" +
+	"_client_idB\x1c\n" +
+	"\x1a_require_resource_audience\x1a\xa6\b\n" +
 	"\rMcpGuardrails\x12d\n" +
 	"\n" +
 	"processors\x18\x03 \x03(\v2D.agentgateway.dev.resource.BackendPolicySpec.McpGuardrails.ProcessorR\n" +

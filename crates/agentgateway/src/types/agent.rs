@@ -2613,6 +2613,17 @@ pub struct McpAuthentication {
 	pub jwt_validator: Arc<crate::http::jwt::Jwt>,
 	pub mode: McpAuthenticationMode,
 	pub client_id: Option<String>,
+	/// When true (default) and no explicit `audiences` are configured, the token `aud`
+	/// must match the advertised resource (RFC 8707). False restores no resource-audience enforcement.
+	pub require_resource_audience: bool,
+}
+
+impl McpAuthentication {
+	/// True when the operator pinned explicit audiences; the static JWT validator handles `aud`
+	/// in that case, so the per-request resource-audience check stays out of the way.
+	pub fn has_explicit_audiences(&self) -> bool {
+		!self.audiences.is_empty()
+	}
 }
 
 #[apply(schema_enum!)]
@@ -2666,6 +2677,10 @@ pub struct LocalMcpAuthentication {
 	pub jwt_validation_options: http::jwt::JWTValidationOptions,
 	/// OAuth client ID advertised to MCP clients when needed.
 	pub client_id: Option<String>,
+	/// When true (default) and no explicit `audiences` are configured, the token `aud` must match
+	/// the advertised resource (RFC 8707). Set false for IdPs that cannot bind `aud` to the resource URL.
+	#[serde(default = "defaults::always_true")]
+	pub require_resource_audience: bool,
 }
 
 impl LocalMcpAuthentication {
@@ -2713,6 +2728,7 @@ impl LocalMcpAuthentication {
 			jwt_validator: Arc::new(jwt),
 			mode: self.mode,
 			client_id: self.client_id.clone(),
+			require_resource_audience: self.require_resource_audience,
 		})
 	}
 }

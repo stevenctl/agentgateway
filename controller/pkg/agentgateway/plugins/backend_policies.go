@@ -635,9 +635,10 @@ func translateMCPAuthenticationSpec(
 		ResourceMetadata: &api.BackendPolicySpec_McpAuthentication_ResourceMetadata{
 			Extra: extraResourceMetadata,
 		},
-		JwksInline: translatedInlineJwks,
-		Mode:       mode,
-		ClientId:   authnPolicy.ClientID,
+		JwksInline:              translatedInlineJwks,
+		Mode:                    mode,
+		ClientId:                authnPolicy.ClientID,
+		RequireResourceAudience: authnPolicy.RequireResourceAudience,
 	}
 	return mcpAuthn, errors.Join(errs...)
 }
@@ -653,7 +654,8 @@ func translateJWTMCPConfig(mcp *agentgateway.JWTMCPConfig) (*api.TrafficPolicySp
 		ResourceMetadata: &api.BackendPolicySpec_McpAuthentication_ResourceMetadata{
 			Extra: extraResourceMetadata,
 		},
-		ClientId: mcp.ClientID,
+		ClientId:                mcp.ClientID,
+		RequireResourceAudience: mcp.RequireResourceAudience,
 	}, nil
 }
 

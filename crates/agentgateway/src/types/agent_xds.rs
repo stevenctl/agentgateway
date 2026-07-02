@@ -452,6 +452,7 @@ fn mcp_authentication_from_proto(
 		std::sync::Arc::new(jwt_validator),
 		mode,
 		m.client_id.clone(),
+		m.require_resource_audience.unwrap_or(true),
 	))
 }
 
@@ -521,6 +522,7 @@ fn build_mcp_authentication(
 	jwt_validator: Arc<http::jwt::Jwt>,
 	mode: McpAuthenticationMode,
 	client_id: Option<String>,
+	require_resource_audience: bool,
 ) -> McpAuthentication {
 	McpAuthentication {
 		issuer,
@@ -530,6 +532,7 @@ fn build_mcp_authentication(
 		jwt_validator,
 		mode,
 		client_id,
+		require_resource_audience,
 	}
 }
 
@@ -2036,6 +2039,7 @@ fn traffic_policy_from_proto(
 							tps::jwt::Mode::Permissive => McpAuthenticationMode::Permissive,
 						},
 						mcp.client_id.clone(),
+						mcp.require_resource_audience.unwrap_or(true),
 					))
 				},
 				None => None,

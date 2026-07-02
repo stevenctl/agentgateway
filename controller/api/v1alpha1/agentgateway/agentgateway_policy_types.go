@@ -1036,7 +1036,9 @@ type JWTProvider struct {
 	// Allowed audiences that are allowed
 	// access. This corresponds to the `aud` claim
 	// ([RFC 7519 §4.1.3](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.3)).
-	// If unset, any audience is allowed.
+	// If unset, any audience is allowed — except when the MCP extension (`mcp`) is
+	// configured, where an unset audiences enforces the resource audience per RFC 8707
+	// (see `JWTMCPConfig.requireResourceAudience`).
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
@@ -1063,6 +1065,13 @@ type JWTMCPConfig struct {
 	// If set, the gateway will not proxy registration requests to the IDP and instead return this client ID.
 	// +optional
 	ClientID *string `json:"clientId,omitempty"`
+
+	// When true (the default) and no explicit provider `audiences` are configured, the token `aud`
+	// must match the advertised resource (RFC 8707). Set false for IdPs that cannot bind
+	// `aud` to the resource URL (e.g. Keycloak); validation then falls back to `audiences`.
+	// +kubebuilder:default=true
+	// +optional
+	RequireResourceAudience *bool `json:"requireResourceAudience,omitempty"`
 }
 
 // +kubebuilder:validation:ExactlyOneOf=remote;inline
@@ -1661,7 +1670,8 @@ type MCPAuthentication struct {
 	// Allowed audiences that are allowed
 	// access. This corresponds to the `aud` claim
 	// ([RFC 7519 §4.1.3](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.3)).
-	// If unset, any audience is allowed.
+	// If unset, the token `aud` must match the advertised resource per RFC 8707
+	// (see `requireResourceAudience`).
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
@@ -1681,6 +1691,13 @@ type MCPAuthentication struct {
 	// If set, the gateway will not proxy registration requests to the IDP and instead return this client ID.
 	// +optional
 	ClientID *string `json:"clientId,omitempty"`
+
+	// When true (the default) and no explicit `audiences` are configured, the token `aud`
+	// must match the advertised resource (RFC 8707). Set false for IdPs that cannot bind
+	// `aud` to the resource URL (e.g. Keycloak); validation then falls back to `audiences`.
+	// +kubebuilder:default=true
+	// +optional
+	RequireResourceAudience *bool `json:"requireResourceAudience,omitempty"`
 }
 
 // +k8s:enum

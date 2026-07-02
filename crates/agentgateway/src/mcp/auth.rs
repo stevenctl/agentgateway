@@ -47,7 +47,53 @@ pub(super) async fn apply_token_validation(
 	auth.jwt_validator.apply(None, req).await.map_err(|e| {
 		create_auth_required_response(ProxyError::JwtAuthenticationFailure(e), req, auth)
 	})?;
+
+	// RFC 8707: with no explicit `audiences`, bind the token to the resource we advertise.
+	let resource = canonical_resource(req, auth);
+	if !resource_audience_ok(auth, req.extensions().get::<Claims>(), &resource) {
+		let err = ProxyError::ProcessingString(format!(
+			"token audience does not match the protected resource {resource}"
+		));
+		return Err(create_auth_required_response(err, req, auth));
+	}
 	Ok(())
+}
+
+/// Whether the token satisfies RFC 8707 resource-audience binding. Returns true (no enforcement) when
+/// the flag is off or explicit `audiences` are configured (the static validator handles `aud` then).
+/// A `None` token — only reachable in Optional/Permissive with no token — also passes, preserving
+/// their "no token allowed" semantics; otherwise the token `aud` must contain `resource`.
+fn resource_audience_ok(auth: &McpAuthentication, claims: Option<&Claims>, resource: &str) -> bool {
+	if !auth.require_resource_audience || auth.has_explicit_audiences() {
+		return true;
+	}
+	match claims {
+		Some(claims) => claim_aud_contains(claims, resource),
+		None => true,
+	}
+}
+
+/// The resource URI we advertise in Protected Resource Metadata, computed identically to
+/// `ResourceMetadata::to_rfc_json`: an explicit `extra["resource"]` wins verbatim, otherwise it is
+/// derived from the request (host/scheme via `x-forwarded-proto`, original URL).
+fn canonical_resource(req: &Request, auth: &McpAuthentication) -> String {
+	auth
+		.resource_metadata
+		.extra
+		.get("resource")
+		.and_then(|v| v.as_str())
+		.map(str::to_string)
+		.unwrap_or_else(|| strip_oauth_protected_resource_prefix(req))
+}
+
+/// True when the token's `aud` claim contains `resource`. Handles `aud` as a string or array; a
+/// missing or non-string `aud` returns false (rejected).
+fn claim_aud_contains(claims: &Claims, resource: &str) -> bool {
+	match claims.inner.get("aud") {
+		Some(serde_json::Value::String(s)) => s == resource,
+		Some(serde_json::Value::Array(arr)) => arr.iter().any(|v| v.as_str() == Some(resource)),
+		_ => false,
+	}
 }
 
 pub(crate) async fn enforce_authentication(
@@ -480,6 +526,7 @@ mod tests {
 				)),
 				mode: crate::types::agent::McpAuthenticationMode::Strict,
 				client_id: None,
+				require_resource_audience: true,
 			},
 		);
 
@@ -513,6 +560,7 @@ mod tests {
 			)),
 			mode: crate::types::agent::McpAuthenticationMode::Strict,
 			client_id: None,
+			require_resource_audience: true,
 		}
 	}
 
@@ -637,5 +685,148 @@ mod tests {
 		assert_eq!(json["client_id"], "operator-id");
 		assert!(json.is_object());
 		assert_eq!(json["redirect_uris"], serde_json::json!([]));
+	}
+
+	// --- RFC 8707 resource-audience enforcement (Design B) ---
+
+	fn claims_with_aud(aud: serde_json::Value) -> Claims {
+		Claims {
+			inner: serde_json::Map::from_iter(vec![("aud".to_string(), aud)]),
+			jwt: secrecy::SecretString::new("fake.jwt.token".into()),
+		}
+	}
+
+	fn claims_without_aud() -> Claims {
+		Claims {
+			inner: serde_json::Map::from_iter(vec![("sub".to_string(), serde_json::json!("u1"))]),
+			jwt: secrecy::SecretString::new("fake.jwt.token".into()),
+		}
+	}
+
+	fn mcp_auth(audiences: Vec<String>, require_resource_audience: bool) -> McpAuthentication {
+		McpAuthentication {
+			issuer: "https://idp.example.com".to_string(),
+			audiences,
+			provider: None,
+			resource_metadata: crate::types::agent::ResourceMetadata {
+				extra: Default::default(),
+			},
+			jwt_validator: Arc::new(crate::http::jwt::Jwt::from_providers(
+				Vec::new(),
+				crate::http::jwt::Mode::Strict,
+				crate::http::auth::AuthorizationLocation::bearer_header(),
+			)),
+			mode: crate::types::agent::McpAuthenticationMode::Strict,
+			client_id: None,
+			require_resource_audience,
+		}
+	}
+
+	const RESOURCE: &str = "https://gateway.example.com/mcp";
+
+	#[test]
+	fn aud_contains_string_match() {
+		let c = claims_with_aud(serde_json::json!(RESOURCE));
+		assert!(claim_aud_contains(&c, RESOURCE));
+	}
+
+	#[test]
+	fn aud_string_mismatch_rejected() {
+		let c = claims_with_aud(serde_json::json!("https://other.example.com/mcp"));
+		assert!(!claim_aud_contains(&c, RESOURCE));
+	}
+
+	#[test]
+	fn aud_array_containing_resource_match() {
+		let c = claims_with_aud(serde_json::json!(["https://other/", RESOURCE]));
+		assert!(claim_aud_contains(&c, RESOURCE));
+	}
+
+	#[test]
+	fn aud_array_without_resource_rejected() {
+		let c = claims_with_aud(serde_json::json!(["https://a/", "https://b/"]));
+		assert!(!claim_aud_contains(&c, RESOURCE));
+	}
+
+	#[test]
+	fn aud_missing_rejected() {
+		assert!(!claim_aud_contains(&claims_without_aud(), RESOURCE));
+	}
+
+	#[test]
+	fn canonical_resource_prefers_configured_resource_verbatim() {
+		let mut auth = mcp_auth(Vec::new(), true);
+		auth.resource_metadata.extra.insert(
+			"resource".to_string(),
+			serde_json::Value::String("https://configured.example.com/mcp".to_string()),
+		);
+		let req = auth_request("https://request-host.example.com/mcp", default_auth());
+		assert_eq!(
+			canonical_resource(&req, &auth),
+			"https://configured.example.com/mcp"
+		);
+	}
+
+	#[test]
+	fn canonical_resource_derives_from_request_with_forwarded_scheme() {
+		let auth = mcp_auth(Vec::new(), true);
+		let req = ::http::Request::builder()
+			.uri("http://gateway.example.com/mcp")
+			.header("x-forwarded-proto", "https")
+			.body(Body::empty())
+			.expect("request should build");
+		assert_eq!(
+			canonical_resource(&req, &auth),
+			"https://gateway.example.com/mcp"
+		);
+	}
+
+	#[test]
+	fn enforcement_rejects_mismatched_aud_when_audiences_unset() {
+		let auth = mcp_auth(Vec::new(), true);
+		let c = claims_with_aud(serde_json::json!("https://other.example.com/mcp"));
+		assert!(!resource_audience_ok(&auth, Some(&c), RESOURCE));
+	}
+
+	#[test]
+	fn enforcement_rejects_missing_aud_when_audiences_unset() {
+		let auth = mcp_auth(Vec::new(), true);
+		assert!(!resource_audience_ok(
+			&auth,
+			Some(&claims_without_aud()),
+			RESOURCE
+		));
+	}
+
+	#[test]
+	fn enforcement_accepts_matching_aud() {
+		let auth = mcp_auth(Vec::new(), true);
+		let c = claims_with_aud(serde_json::json!(RESOURCE));
+		assert!(resource_audience_ok(&auth, Some(&c), RESOURCE));
+	}
+
+	#[test]
+	fn enforcement_skipped_when_explicit_audiences_set() {
+		// Explicit audiences -> static validator owns `aud`; B stays out even for a non-resource aud.
+		let auth = mcp_auth(vec!["account".to_string()], true);
+		let c = claims_with_aud(serde_json::json!("account"));
+		assert!(resource_audience_ok(&auth, Some(&c), RESOURCE));
+	}
+
+	#[test]
+	fn enforcement_disabled_by_flag() {
+		let auth = mcp_auth(Vec::new(), false);
+		assert!(resource_audience_ok(
+			&auth,
+			Some(&claims_without_aud()),
+			RESOURCE
+		));
+	}
+
+	#[test]
+	fn enforcement_skips_when_no_token_present() {
+		// Optional/Permissive with no token leaves no Claims; nothing to enforce.
+		let auth = mcp_auth(Vec::new(), true);
+		assert!(resource_audience_ok(&auth, None, RESOURCE));
 	}
 }
