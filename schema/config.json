@@ -4328,7 +4328,7 @@
           "default": "failOpen"
         },
         "exactMeasurement": {
-          "description": "Measure the exact token count of the original (pre-compression) request via the\nprovider's count_tokens endpoint, in the background off the hot path. Supported when\nthe selected provider/model has a native count_tokens route; adds one free (but\nrate-limited) upstream call per compressed request.",
+          "description": "(Best-Effort) attempt to use the upstream provider's token counting API to\nget more accurate measurement of compression savings.",
           "type": "boolean",
           "default": false
         }
@@ -9595,7 +9595,7 @@
           ]
         },
         "headroom": {
-          "description": "headroom configures the context-compression sidecar.",
+          "description": "headroom configures the Headroom context-compression service.",
           "anyOf": [
             {
               "$ref": "#/$defs/Headroom"

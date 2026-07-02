@@ -747,6 +747,7 @@ mod tests {
 				streaming: false,
 				params: Default::default(),
 				prompt: None,
+				provider_state: None,
 			},
 			response,
 		}

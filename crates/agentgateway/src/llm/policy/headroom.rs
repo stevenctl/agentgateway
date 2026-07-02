@@ -73,7 +73,7 @@ pub async fn compress(
 mod tests {
 	use super::*;
 
-	// A well-formed sidecar response parses into the message array.
+	// A well-formed Headroom response parses into the message array.
 	#[test]
 	fn compress_response_parses_message_array() {
 		let body = serde_json::json!({

@@ -2,14 +2,14 @@
 #
 # Headroom context-compression example.
 #
-# Run a Headroom sidecar alongside the gateway to compress request context before it
+# Run Headroom alongside the gateway to compress request context before it
 # reaches the LLM:
 #
 #   headroom proxy --port 8787 --mode cache
 #
-# The gateway POSTs each request's messages to the sidecar's /v1/compress endpoint and
+# The gateway POSTs each request's messages to Headroom's /v1/compress endpoint and
 # forwards the compressed result upstream. Send `x-headroom-bypass: true` to skip
-# compression for a request. If the sidecar is unreachable, `failureMode: failOpen`
+# compression for a request. If Headroom is unreachable, `failureMode: failOpen`
 # (the default) forwards the original request unchanged.
 #
 # This uses the `llm` server form (default port 4000), which matches the Claude Code

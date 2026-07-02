@@ -49,7 +49,7 @@ The `prompt-enrichment` example shows how to append or preprend prompts to agent
 
 ### [Headroom Context Compression](headroom/README.md)
 
-The `headroom` example shows how to compress LLM request context through a Headroom sidecar to reduce token usage on long-context requests.
+The `headroom` example shows how to compress LLM request context through a Headroom service to reduce token usage on long-context requests.
 
 ### [Standalone EPP](standalone-epp/README.md)
 

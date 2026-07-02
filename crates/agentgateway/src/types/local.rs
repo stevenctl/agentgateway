@@ -711,7 +711,7 @@ pub struct LocalLLMModels {
 	/// promptCaching configures cache point insertion for supported LLM providers.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	prompt_caching: Option<PromptCachingConfig>,
-	/// headroom configures the context-compression sidecar.
+	/// headroom configures the Headroom context-compression service.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	headroom: Option<Headroom>,
 

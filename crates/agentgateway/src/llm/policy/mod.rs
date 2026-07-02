@@ -1608,7 +1608,7 @@ impl Headroom {
 			|| compressed.messages.iter().any(|m| !m.is_object())
 		{
 			return HeadroomOutcome::Failed(
-				"sidecar returned an empty or malformed message array".into(),
+				"headroom returned an empty or malformed message array".into(),
 			);
 		}
 		HeadroomOutcome::Compressed {

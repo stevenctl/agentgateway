@@ -2307,7 +2307,7 @@ fn fixed_providers_classify_by_family() {
 mod headroom_exact_count {
 	use super::*;
 	use crate::llm::policy::{FailureMode, Headroom, HeadroomMode};
-	use crate::types::agent::SimpleBackend;
+	use crate::types::agent::{ResourceName, SimpleBackend};
 
 	fn original_request(model: &str) -> types::messages::Request {
 		serde_json::from_value(json!({

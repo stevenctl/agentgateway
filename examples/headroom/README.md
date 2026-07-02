@@ -53,11 +53,11 @@ export ANTHROPIC_BASE_URL=http://localhost:4000
 claude -p "Hello"
 ```
 
-With the sidecar in `--mode cache`, Headroom freezes prior turns so Anthropic's
+In `--mode cache`, Headroom freezes prior turns so Anthropic's
 prompt cache still hits and only the newest turn is compressed, long sessions
 cost less without losing the cached-prefix discount. To confirm the gateway is
 in the path, watch its logs (or Headroom's) while Claude Code runs; add `--mode
-token` on the sidecar to maximize raw compression instead.
+token` on Headroom to maximize raw compression instead.
 
 ### Sending a raw request
 
@@ -85,7 +85,7 @@ call. The gateway consumes this header; it is not forwarded to the provider.
 
 ### Cache-stable compression (recommended for cached providers)
 
-By default the sidecar's compression is position-dependent: a message's
+By default Headroom's compression is position-dependent: a message's
 compressed bytes change as it ages (recency protection, adaptive ratios, and
 stale-Read rewrites that alter *earlier* messages when a file is edited
 *later*). On providers with prompt caching (Anthropic), every such byte change
@@ -96,7 +96,7 @@ compression saves.
 Cache-stable mode makes `/v1/compress` a deterministic, prefix-stable
 function: if a conversation extends a previous one, the compressed output is a
 byte-identical extension of the previous compressed output, so the provider
-cache keeps hitting. This is pure sidecar *startup* configuration — the
+cache keeps hitting. This is pure Headroom *startup* configuration — the
 gateway stays stateless (no sticky routing needed) and the wire contract is
 unchanged:
 
@@ -158,7 +158,7 @@ measurement succeeds:
 
 ### Large contexts
 
-Request and sidecar-response bodies are subject to the frontend's
+Request and Headroom-response bodies are subject to the frontend's
 `maxBufferSize` (default 2MB). For contexts larger than that, raise
 `frontendPolicies.http.maxBufferSize` on the bind; the gateway applies the same
-limit when reading the sidecar's compressed response.
+limit when reading Headroom's compressed response.

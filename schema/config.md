@@ -1250,7 +1250,7 @@
 |`binds[].listeners[].routes[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`binds[].listeners[].routes[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`binds[].listeners[].routes[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`binds[].listeners[].routes[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`binds[].listeners[].routes[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`binds[].listeners[].routes[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`binds[].listeners[].routes[].policies.backendTLS`|object|TLS settings used when connecting to the backend.|
 |`binds[].listeners[].routes[].policies.backendTLS.cert`|string|Client certificate file to present to the backend.|
@@ -3930,7 +3930,7 @@
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`binds[].listeners[].routes[].backends[].ai.policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`binds[].listeners[].routes[].backends[].ai.policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`binds[].listeners[].routes[].backends[].ai.groups`|[]object||
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers`|[]object||
@@ -5308,7 +5308,7 @@
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`binds[].listeners[].routes[].backends[].aws`|object||
 |`binds[].listeners[].routes[].backends[].aws.agentCore`|object||
@@ -6656,7 +6656,7 @@
 |`binds[].listeners[].routes[].backends[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`binds[].listeners[].routes[].backends[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`binds[].listeners[].routes[].backends[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`binds[].listeners[].routes[].backends[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`binds[].listeners[].routes[].backends[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`binds[].listeners[].routes[].backends[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`binds[].listeners[].tcpRoutes`|[]object||
 |`binds[].listeners[].tcpRoutes[].name`|string||
@@ -8953,7 +8953,7 @@
 |`policies[].policy.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`policies[].policy.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`policies[].policy.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`policies[].policy.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`policies[].policy.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`policies[].policy.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`policies[].policy.backendTLS`|object|TLS settings used when connecting to the backend.|
 |`policies[].policy.backendTLS.cert`|string|Client certificate file to present to the backend.|
@@ -11630,7 +11630,7 @@
 |`backends[].ai.policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`backends[].ai.policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`backends[].ai.policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`backends[].ai.policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`backends[].ai.policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`backends[].ai.policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`backends[].ai.groups`|[]object||
 |`backends[].ai.groups[].providers`|[]object||
@@ -13008,7 +13008,7 @@
 |`backends[].ai.groups[].providers[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`backends[].ai.groups[].providers[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`backends[].ai.groups[].providers[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`backends[].ai.groups[].providers[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`backends[].ai.groups[].providers[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`backends[].ai.groups[].providers[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`backends[].aws`|object||
 |`backends[].aws.agentCore`|object||
@@ -14354,7 +14354,7 @@
 |`backends[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`backends[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`backends[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`backends[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`backends[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`backends[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`routeGroups`|[]object||
 |`routeGroups[].name`|string||
@@ -15511,7 +15511,7 @@
 |`routeGroups[].routes[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`routeGroups[].routes[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`routeGroups[].routes[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`routeGroups[].routes[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`routeGroups[].routes[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`routeGroups[].routes[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`routeGroups[].routes[].policies.backendTLS`|object|TLS settings used when connecting to the backend.|
 |`routeGroups[].routes[].policies.backendTLS.cert`|string|Client certificate file to present to the backend.|
@@ -18191,7 +18191,7 @@
 |`routeGroups[].routes[].backends[].ai.policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`routeGroups[].routes[].backends[].ai.policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`routeGroups[].routes[].backends[].ai.policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`routeGroups[].routes[].backends[].ai.policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`routeGroups[].routes[].backends[].ai.groups`|[]object||
 |`routeGroups[].routes[].backends[].ai.groups[].providers`|[]object||
@@ -19569,7 +19569,7 @@
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`routeGroups[].routes[].backends[].aws`|object||
 |`routeGroups[].routes[].backends[].aws.agentCore`|object||
@@ -20917,7 +20917,7 @@
 |`routeGroups[].routes[].backends[].policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`routeGroups[].routes[].backends[].policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`routeGroups[].routes[].backends[].policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`routeGroups[].routes[].backends[].policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`routeGroups[].routes[].backends[].policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`routeGroups[].routes[].backends[].policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`llm`|object||
 |`llm.port`|integer||
@@ -21086,7 +21086,7 @@
 |`llm.providers[].defaults.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`llm.providers[].defaults.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`llm.providers[].defaults.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`llm.providers[].defaults.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`llm.providers[].defaults.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`llm.models`|[]object|models defines the set of models that can be served by this gateway. The model name refers to the<br>model in the users request that is matched; the model sent to the actual LLM can be overridden<br>on a per-model basis.|
 |`llm.models[].name`|string|name is the name of the model we are matching from a users request. If params.model is set, that<br>will be used in the request to the LLM provider. If not, the incoming model is used.|
 |`llm.models[].visibility`|enum|visibility controls whether clients can request this model directly (rather than only via a `virtualModel`).<br>Possible values: `public`, `internal`.|
@@ -22126,7 +22126,7 @@
 |`llm.models[].promptCaching.cacheTools`|boolean|Add cache markers to tool definitions when supported by the provider.|
 |`llm.models[].promptCaching.minTokens`|integer|Minimum prompt size required before cache markers are added.|
 |`llm.models[].promptCaching.cacheMessageOffset`|integer|Message offset used when choosing where to place cache markers.|
-|`llm.models[].headroom`|object|headroom configures the context-compression sidecar.|
+|`llm.models[].headroom`|object|headroom configures the Headroom context-compression service.|
 |`llm.models[].headroom.target`|object|Backend for the Headroom instance (serves `/v1/compress` and `/v1/retrieve`).<br>Exactly one of service, host, or backend may be set.|
 |`llm.models[].headroom.target.service`|object|Service reference. Service must be defined in the top level services list.|
 |`llm.models[].headroom.target.service.name`|string||
@@ -22135,7 +22135,7 @@
 |`llm.models[].headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`llm.models[].headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`llm.models[].headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`llm.models[].headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`llm.models[].headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`llm.models[].matches`|[]object|matches specifies the conditions under which this model should be used in addition to matching the model name.|
 |`llm.models[].matches[].headers`|[]object||
 |`llm.models[].matches[].headers[].name`|string||
@@ -25248,7 +25248,7 @@
 |`mcp.policies.ai.headroom.target.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
 |`mcp.policies.ai.headroom.mode`|enum|Compression behavior<br>TODO add CCR mode<br>Possible values: `compress`.|
 |`mcp.policies.ai.headroom.failureMode`|enum|Behavior when the headroom is unreachable or errors. Defaults to `failOpen`<br>(compression is an optimization; a headroom issue should not drop LLM traffic).<br>Possible values: `failClosed`, `failOpen`.|
-|`mcp.policies.ai.headroom.exactMeasurement`|boolean|Measure the exact token count of the original (pre-compression) request via the<br>provider's count_tokens endpoint, in the background off the hot path. Supported when<br>the selected provider/model has a native count_tokens route; adds one free (but<br>rate-limited) upstream call per compressed request.|
+|`mcp.policies.ai.headroom.exactMeasurement`|boolean|(Best-Effort) attempt to use the upstream provider's token counting API to<br>get more accurate measurement of compression savings.|
 |`mcp.policies.ai.routes`|object|Route type overrides selected by request path suffix.|
 |`mcp.policies.backendTLS`|object|TLS settings used when connecting to the backend.|
 |`mcp.policies.backendTLS.cert`|string|Client certificate file to present to the backend.|
