@@ -2396,6 +2396,7 @@ async fn make_backend_call(
 								params: Default::default(),
 								prompt: Default::default(),
 								provider_state: None,
+								compression: None,
 							})
 						});
 					}
@@ -3081,6 +3082,7 @@ mod tests {
 	fn llm_request() -> llm::LLMRequest {
 		llm::LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: llm::InputFormat::Completions,
 			native_format: Some(llm::custom::ProviderFormat::Completions),
 			cache_convention: llm::CacheTokenConvention::pending(),

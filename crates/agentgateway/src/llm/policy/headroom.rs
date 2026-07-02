@@ -48,7 +48,7 @@ pub async fn compress(
 
 	let res = Box::pin(
 		client
-			.with_outbound(OutboundCallKind::Policy, OutboundCallSubtype::Headroom)
+			.with_outbound(OutboundCallKind::Policy, OutboundCallSubtype::Compression)
 			.call_reference(req, target),
 	)
 	.await?;

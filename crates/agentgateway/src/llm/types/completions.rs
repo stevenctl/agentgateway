@@ -283,6 +283,7 @@ impl super::RequestType for Request {
 		// Pass the original body through
 		let llm = LLMRequest {
 			input_tokens,
+			compression: None,
 			input_format: InputFormat::Completions,
 			native_format: Some(crate::llm::custom::ProviderFormat::Completions),
 			cache_convention: crate::llm::CacheTokenConvention::pending(),

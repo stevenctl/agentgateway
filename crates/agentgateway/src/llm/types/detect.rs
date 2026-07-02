@@ -80,6 +80,7 @@ impl RequestType for Request {
 		Ok(LLMRequest {
 			// We never tokenize these, so always empty
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Detect,
 			native_format: None,
 			cache_convention: crate::llm::CacheTokenConvention::pending(),
@@ -195,6 +196,7 @@ mod tests {
 	fn llm_request() -> LLMRequest {
 		LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: crate::llm::InputFormat::Detect,
 			native_format: None,
 			cache_convention: crate::llm::CacheTokenConvention::pending(),

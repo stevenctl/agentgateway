@@ -1522,6 +1522,10 @@ pub struct Headroom {
 	/// (compression is an optimization; a headroom issue should not drop LLM traffic).
 	#[serde(default = "headroom_default_failure_mode")]
 	pub failure_mode: FailureMode,
+	/// (Best-Effort) attempt to use the upstream provider's token counting API to
+	/// get more accurate measurement of compression savings.
+	#[serde(default)]
+	pub exact_measurement: bool,
 }
 
 #[apply(schema!)]
@@ -1543,11 +1547,11 @@ fn headroom_default_failure_mode() -> FailureMode {
 pub enum HeadroomOutcome {
 	/// Explicitly bypassed or unsupported request.
 	Bypass,
-	/// Compression succeeded; `messages` is not yet applied to the request, and `original`
+	/// Compression succeeded; `compressed` is not yet applied to the request, and `original`
 	/// is the pre-compression snapshot for reverting on a downstream failure.
 	Compressed {
 		original: Vec<serde_json::Value>,
-		messages: Vec<serde_json::Value>,
+		compressed: Vec<serde_json::Value>,
 	},
 	/// Compression failed; carries the reason.
 	Failed(String),
@@ -1557,6 +1561,7 @@ impl Headroom {
 	pub async fn compress_request(
 		&self,
 		backend_info: &auth::BackendInfo,
+		// TODO we don't need mut req, but `model()` is mut
 		req: &mut dyn RequestType,
 		parts: &mut ::http::request::Parts,
 	) -> HeadroomOutcome {
@@ -1608,7 +1613,7 @@ impl Headroom {
 		}
 		HeadroomOutcome::Compressed {
 			original,
-			messages: compressed.messages,
+			compressed: compressed.messages,
 		}
 	}
 

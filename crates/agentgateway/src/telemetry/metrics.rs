@@ -173,7 +173,7 @@ pub enum OutboundCallSubtype {
 	ExtAuthz,
 	ExtProc,
 	Guardrail,
-	Headroom,
+	Compression,
 	RateLimit,
 	Oidc,
 }
@@ -205,6 +205,8 @@ pub struct Metrics {
 
 	pub gen_ai_token_usage: Histogram<GenAILabelsTokenUsage>,
 	pub gen_ai_cost: Family<GenAILabels, counter::Counter<f64>>,
+	pub compression_saved_tokens: Family<GenAILabels, counter::Counter>,
+	pub compression_saved_cost: Family<GenAILabels, counter::Counter<f64>>,
 	pub gen_ai_request_duration: Histogram<GenAILabels>,
 	pub gen_ai_time_per_output_token: Histogram<GenAILabels>,
 	pub gen_ai_time_to_first_token: Histogram<GenAILabels>,
@@ -322,6 +324,20 @@ impl Metrics {
 			gen_ai_cost.clone(),
 		);
 
+		let compression_saved_tokens = Family::<GenAILabels, _>::default();
+		registry.register(
+			"compression_saved_tokens",
+			"Tokens removed from LLM requests by compression (provider-exact when available, else compressor-reported estimate)",
+			compression_saved_tokens.clone(),
+		);
+		let compression_saved_cost = Family::<GenAILabels, _>::default();
+		registry.register_with_unit(
+			"compression_saved_cost",
+			"Estimated cumulative USD avoided by compression, priced at the observed input/cache mix",
+			Unit::Other("usd".to_string()),
+			compression_saved_cost.clone(),
+		);
+
 		// TODO: add error attribute if it ends with an error
 		let gen_ai_request_duration = Family::<GenAILabels, _>::new_with_constructor(move || {
 			PromHistogram::new(REQUEST_DURATION_BUCKET)
@@ -388,6 +404,8 @@ impl Metrics {
 
 			gen_ai_token_usage,
 			gen_ai_cost,
+			compression_saved_tokens,
+			compression_saved_cost,
 			gen_ai_request_duration,
 			gen_ai_time_per_output_token,
 			gen_ai_time_to_first_token,

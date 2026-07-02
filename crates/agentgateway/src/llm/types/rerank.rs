@@ -107,6 +107,7 @@ impl RequestType for Request {
 		let model = strng::new(self.model.as_deref().unwrap_or_default());
 		Ok(LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Rerank,
 			native_format: Some(crate::llm::custom::ProviderFormat::Rerank),
 			cache_convention: crate::llm::CacheTokenConvention::pending(),

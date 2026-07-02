@@ -204,6 +204,7 @@ impl RequestType for Request {
 		// Pass the original body through
 		let llm = LLMRequest {
 			input_tokens,
+			compression: None,
 			input_format: InputFormat::Messages,
 			native_format: Some(crate::llm::custom::ProviderFormat::Messages),
 			cache_convention: crate::llm::CacheTokenConvention::pending(),
@@ -224,6 +225,10 @@ impl RequestType for Request {
 			provider_state: None,
 		};
 		Ok(llm)
+	}
+
+	fn to_count_tokens_request(&self) -> Option<crate::llm::types::count_tokens::Request> {
+		Some(crate::llm::types::count_tokens::Request::from_messages_request(self))
 	}
 
 	fn get_messages(&self) -> Vec<SimpleChatCompletionMessage> {

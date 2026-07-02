@@ -114,6 +114,54 @@ impl ModelCatalog {
 			info.request.cache_convention,
 		)
 	}
+
+	/// Estimated USD avoided by sending `saved_tokens` fewer context tokens. The saved tokens
+	/// are attributed proportionally to the observed input/cache-read/cache-write mix (rounding
+	/// dust to cache-read, the cheapest bucket) and the usage is re-priced with them added back,
+	/// re-selecting the pricing tier at the larger context. Assumes compression scales the
+	/// context without changing cache behavior — which prefix-stable compression preserves.
+	pub fn saved_cost(&self, info: &LLMInfo, saved_tokens: u64) -> Option<f64> {
+		let resp = &info.response;
+		resp.input_tokens?;
+		let snapshot = self.snapshot.load();
+		let catalog = snapshot.catalog.as_ref()?;
+		let provider = info.request.provider.as_str();
+		let entry = resp
+			.provider_model
+			.as_ref()
+			.and_then(|m| catalog.resolve(provider, m.as_str()))
+			.or_else(|| catalog.resolve(provider, info.request.request_model.as_str()))?;
+		let actual = price_with_entry(entry, resp, info.request.cache_convention)?;
+
+		let mut cf = actual.usage.clone();
+		let text_context = cf.input + cf.cache_read + cf.cache_write;
+		if text_context == 0 {
+			cf.input = cf.input.saturating_add(saved_tokens);
+		} else {
+			let share =
+				|bucket: u64| ((saved_tokens as u128 * bucket as u128) / text_context as u128) as u64;
+			let add_input = share(cf.input);
+			let add_write = share(cf.cache_write);
+			cf.input = cf.input.saturating_add(add_input);
+			cf.cache_write = cf.cache_write.saturating_add(add_write);
+			cf.cache_read = cf
+				.cache_read
+				.saturating_add(saved_tokens - add_input - add_write);
+		}
+		let rates = entry.effective_rates(cf.context_tokens());
+		if rates.is_empty() {
+			return None;
+		}
+		let counterfactual = rates.breakdown(&cf);
+		(counterfactual.total() - actual.breakdown.total()).to_f64()
+	}
+}
+
+/// Provider-billed context tokens for a response: fresh input plus cache reads/writes and
+/// audio, under the provider's cache token convention.
+pub fn billed_context_tokens(convention: CacheTokenConvention, resp: &LLMResponse) -> Option<u64> {
+	resp.input_tokens?;
+	Some(usage_for(convention, resp, true).context_tokens())
 }
 
 pub struct CatalogSnapshot {
@@ -215,12 +263,8 @@ impl CatalogSnapshot {
 			return CostProjection::unpriced(CostLookupStatus::Missing);
 		};
 
-		let provisional_usage = usage_for(convention, resp, true);
-		// Tier selection must be invariant to cache-read repricing below: the
-		// cache tokens may move between input/cache_read, but their sum is stable.
-		let context_tokens = provisional_usage.context_tokens();
-		let rates = entry.effective_rates(context_tokens);
-		if rates.is_empty() {
+		let Some(priced) = price_with_entry(entry, resp, convention) else {
+			let provisional_usage = usage_for(convention, resp, true);
 			crate::proxy::dtrace::pol_event!(
 				TRACE_POLICY_KIND,
 				crate::proxy::dtrace::Severity::Warn,
@@ -230,22 +274,15 @@ impl CatalogSnapshot {
 					"status": status_name(CostLookupStatus::Unpriced),
 					"reason": "catalog entry has no effective rates",
 					"cacheTokenConvention": cache_convention_name(convention),
-					"contextTokens": context_tokens,
+					"contextTokens": provisional_usage.context_tokens(),
 					"usage": &provisional_usage,
 				}),
 			);
 			return CostProjection::unpriced(CostLookupStatus::Unpriced);
-		}
-
-		let prices_cache_read = rates.cache_read.is_some();
-		let usage = if prices_cache_read {
-			provisional_usage
-		} else {
-			usage_for(convention, resp, false)
 		};
-		let breakdown = rates.breakdown(&usage);
-		let cost = CostBreakdown::from(&breakdown);
-		let cost_rates = CostRates::from(&rates);
+
+		let cost = CostBreakdown::from(&priced.breakdown);
+		let cost_rates = CostRates::from(&priced.rates);
 		crate::proxy::dtrace::pol_event!(
 			TRACE_POLICY_KIND,
 			crate::proxy::dtrace::Severity::Info,
@@ -254,19 +291,55 @@ impl CatalogSnapshot {
 				"model": model,
 				"status": status_name(CostLookupStatus::Exact),
 				"cacheTokenConvention": cache_convention_name(convention),
-				"contextTokens": context_tokens,
-				"pricesCacheRead": prices_cache_read,
-				"usage": &usage,
+				"contextTokens": priced.context_tokens,
+				"pricesCacheRead": priced.rates.cache_read.is_some(),
+				"usage": &priced.usage,
 				"rates": cost_rates,
 				"cost": cost,
 			}),
 		);
 		CostProjection {
 			status: CostLookupStatus::Exact,
-			cost: Some(breakdown),
+			cost: Some(priced.breakdown),
 			cost_rates: Some(cost_rates),
 		}
 	}
+}
+
+struct PricedUsage {
+	usage: Usage,
+	rates: Rates,
+	context_tokens: u64,
+	breakdown: Breakdown,
+}
+
+/// Pure pricing core: usage attribution, tier selection, and breakdown for one catalog entry.
+/// Returns None when the entry has no effective rates.
+fn price_with_entry(
+	entry: &catalog::Model,
+	resp: &LLMResponse,
+	convention: CacheTokenConvention,
+) -> Option<PricedUsage> {
+	let provisional_usage = usage_for(convention, resp, true);
+	// Tier selection must be invariant to cache-read repricing below: the
+	// cache tokens may move between input/cache_read, but their sum is stable.
+	let context_tokens = provisional_usage.context_tokens();
+	let rates = entry.effective_rates(context_tokens);
+	if rates.is_empty() {
+		return None;
+	}
+	let usage = if rates.cache_read.is_some() {
+		provisional_usage
+	} else {
+		usage_for(convention, resp, false)
+	};
+	let breakdown = rates.breakdown(&usage);
+	Some(PricedUsage {
+		usage,
+		rates,
+		context_tokens,
+		breakdown,
+	})
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -636,6 +709,7 @@ mod tests {
 		LLMInfo {
 			request: crate::llm::LLMRequest {
 				input_tokens: None,
+				compression: None,
 				input_format: crate::llm::InputFormat::Completions,
 				native_format: None,
 				cache_convention: CacheTokenConvention::InputIncludesCache,
@@ -652,6 +726,29 @@ mod tests {
 				provider_model: provider_model.map(Into::into),
 				..Default::default()
 			},
+		}
+	}
+
+	fn info_with(
+		provider: &str,
+		model: &str,
+		convention: CacheTokenConvention,
+		response: LLMResponse,
+	) -> LLMInfo {
+		LLMInfo {
+			request: crate::llm::LLMRequest {
+				input_tokens: None,
+				compression: None,
+				input_format: crate::llm::InputFormat::Messages,
+				native_format: None,
+				cache_convention: convention,
+				request_model: model.into(),
+				provider: provider.into(),
+				streaming: false,
+				params: Default::default(),
+				prompt: None,
+			},
+			response,
 		}
 	}
 
@@ -743,6 +840,107 @@ mod tests {
 		let u = usage_for(CacheTokenConvention::InputIncludesCache, &resp, true);
 		assert_eq!(u.input, 700);
 		assert_eq!(u.cache_read, 300);
+	}
+
+	#[test]
+	fn saved_cost_uses_observed_cache_mix() {
+		let catalog = model_catalog(
+			r#"{"providers":{"anthropic":{"models":{"claude-x":{"rates":{"input":"3","output":"15","cacheRead":"0.3","cacheWrite":"3.75"}}}}}}"#,
+		);
+		let info = info_with(
+			"anthropic",
+			"claude-x",
+			CacheTokenConvention::InputExcludesCache,
+			LLMResponse {
+				input_tokens: Some(1_000),
+				cached_input_tokens: Some(8_000),
+				cache_creation_input_tokens: Some(1_000),
+				output_tokens: Some(500),
+				..Default::default()
+			},
+		);
+		// 10k saved splits 1k/8k/1k across input/read/write like the observed mix:
+		// (1000*3 + 8000*0.3 + 1000*3.75) / 1M = 0.00915 — not 10k at the fresh rate (0.03).
+		let saved = catalog.saved_cost(&info, 10_000).unwrap();
+		assert!((saved - 0.00915).abs() < 1e-9, "got {saved}");
+	}
+
+	#[test]
+	fn saved_cost_all_fresh_without_cache_usage() {
+		let catalog = model_catalog(
+			r#"{"providers":{"anthropic":{"models":{"claude-x":{"rates":{"input":"3","output":"15"}}}}}}"#,
+		);
+		let info = info_with(
+			"anthropic",
+			"claude-x",
+			CacheTokenConvention::InputExcludesCache,
+			LLMResponse {
+				input_tokens: Some(1_000),
+				output_tokens: Some(500),
+				..Default::default()
+			},
+		);
+		let saved = catalog.saved_cost(&info, 1_000).unwrap();
+		assert!((saved - 0.003).abs() < 1e-9, "got {saved}");
+	}
+
+	#[test]
+	fn saved_cost_credits_tier_crossing() {
+		let catalog = model_catalog(
+			r#"{"providers":{"anthropic":{"models":{"claude-x":{"rates":{"input":"3","output":"15"},"tiers":[{"contextOver":200000,"rates":{"input":"6","output":"22.5"}}]}}}}}"#,
+		);
+		let info = info_with(
+			"anthropic",
+			"claude-x",
+			CacheTokenConvention::InputExcludesCache,
+			LLMResponse {
+				input_tokens: Some(195_000),
+				output_tokens: Some(0),
+				..Default::default()
+			},
+		);
+		// Counterfactual crosses the 200k tier: whole request repriced at 6/1M.
+		// 205k*6 − 195k*3 = 1.23 − 0.585 = 0.645
+		let saved = catalog.saved_cost(&info, 10_000).unwrap();
+		assert!((saved - 0.645).abs() < 1e-9, "got {saved}");
+	}
+
+	#[test]
+	fn saved_cost_requires_provider_usage() {
+		let catalog = model_catalog(&test_catalog("3"));
+		let mut info = test_llm_info("my-model", None);
+		info.response.input_tokens = None;
+		assert_eq!(catalog.saved_cost(&info, 1_000), None);
+	}
+
+	#[test]
+	fn billed_context_tokens_by_convention() {
+		let anthropic = LLMResponse {
+			input_tokens: Some(1000),
+			cached_input_tokens: Some(300),
+			cache_creation_input_tokens: Some(200),
+			..Default::default()
+		};
+		assert_eq!(
+			billed_context_tokens(CacheTokenConvention::InputExcludesCache, &anthropic),
+			Some(1500)
+		);
+		let openai = LLMResponse {
+			input_tokens: Some(1000),
+			cached_input_tokens: Some(300),
+			..Default::default()
+		};
+		assert_eq!(
+			billed_context_tokens(CacheTokenConvention::InputIncludesCache, &openai),
+			Some(1000)
+		);
+		assert_eq!(
+			billed_context_tokens(
+				CacheTokenConvention::InputIncludesCache,
+				&LLMResponse::default()
+			),
+			None
+		);
 	}
 
 	#[test]

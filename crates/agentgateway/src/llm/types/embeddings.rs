@@ -65,6 +65,7 @@ impl RequestType for Request {
 		Ok(LLMRequest {
 			// We never tokenize these, so always empty
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Embeddings,
 			native_format: Some(crate::llm::custom::ProviderFormat::Embeddings),
 			cache_convention: crate::llm::CacheTokenConvention::pending(),

@@ -1,5 +1,4 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use ::http::request::Parts;
 use ::http::uri::{Authority, PathAndQuery};
@@ -35,6 +34,7 @@ pub mod model_router;
 pub mod openai;
 pub mod vertex;
 
+mod compression;
 mod conversion;
 pub mod cost;
 pub mod policy;
@@ -176,6 +176,7 @@ pub struct LLMRequest {
 	pub params: LLMRequestParams,
 	pub prompt: Option<Arc<Vec<SimpleChatCompletionMessage>>>,
 	pub provider_state: Option<ProviderState>,
+	pub compression: Option<CompressionInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +185,11 @@ pub enum ProviderState {
 		/// Reverse mapping from Bedrock-safe tool names back to client tool names.
 		tool_names: Arc<conversion::bedrock::BedrockToolNameMap>,
 	},
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionInfo {
+	pub pre_compression_input_tokens: Arc<std::sync::OnceLock<u64>>,
 }
 
 /// Whether an upstream's reported `input_tokens` already includes cached tokens.
@@ -1136,8 +1142,8 @@ impl AIProvider {
 			}
 		}
 
-		let maybe_compressed_body = match self
-			.apply_headroom(
+		let (compressed_body, compression_info) = match self
+			.apply_compression(
 				policies,
 				backend_info,
 				&mut req,
@@ -1147,7 +1153,7 @@ impl AIProvider {
 			)
 			.await
 		{
-			Ok(body) => body,
+			Ok((body, info)) => (body, info),
 			Err(rejection) => return Ok(RequestResult::Rejected(rejection)),
 		};
 
@@ -1157,6 +1163,7 @@ impl AIProvider {
 		}
 		llm_info.native_format = native_format;
 		llm_info.cache_convention = cache_convention_for(self, native_format, &llm_info.request_model);
+		llm_info.compression = compression_info;
 		if let Some(log) = log
 			&& log.cel.cel_context.needs_llm_prompt()
 			&& original_format.supports_prompt_guard()
@@ -1166,29 +1173,8 @@ impl AIProvider {
 
 		let request_model = llm_info.request_model.as_str();
 		let new_request = if original_format == InputFormat::CountTokens {
-			match self {
-				AIProvider::Anthropic(_) => req.to_anthropic()?,
-				AIProvider::Custom(_) => req.to_anthropic()?,
-				AIProvider::Bedrock(_) => req.to_bedrock_token_count(&parts.headers)?,
-				AIProvider::Vertex(provider) => {
-					let body = req.to_anthropic()?;
-					provider.prepare_anthropic_count_tokens_body(body)?
-				},
-				AIProvider::Azure(p)
-					if matches!(p.resource_type, azure::AzureResourceType::Foundry)
-						&& p.is_anthropic_model(Some(request_model)) =>
-				{
-					// Foundry's Anthropic-native count_tokens endpoint accepts the Anthropic wire format
-					// as-is (the model stays in the body, unlike Vertex which strips it).
-					req.to_anthropic()?
-				},
-				_ => {
-					return Err(AIError::UnsupportedConversion(strng::literal!(
-						"count_tokens not supported for this provider"
-					)));
-				},
-			}
-		} else if let Some((body, provider_state)) = maybe_compressed_body {
+			self.marshal_count_tokens_request(&req, &parts.headers, request_model)?
+		} else if let Some((body, provider_state)) = compressed_body {
 			// compression has to marshal as part of validation, do not re-marshal
 			llm_info.provider_state = provider_state;
 			body
@@ -1212,47 +1198,30 @@ impl AIProvider {
 		Ok(RequestResult::Success(req, llm_info))
 	}
 
-	async fn apply_headroom(
+	pub(crate) fn marshal_count_tokens_request(
 		&self,
-		policies: Option<&Policy>,
-		backend_info: &crate::http::auth::BackendInfo,
-		req: &mut dyn RequestType,
-		parts: &mut ::http::request::Parts,
-		original_format: InputFormat,
-		native_format: Option<custom::ProviderFormat>,
-	) -> Result<Option<(Vec<u8>, Option<ProviderState>)>, Response> {
-		let Some(hr) = policies.and_then(|p| p.headroom.as_ref()) else {
-			return Ok(None);
-		};
-		// no need to compress token counting, we want the original in that case
-		if original_format == InputFormat::CountTokens {
-			return Ok(None);
-		}
-		let original = match hr.compress_request(backend_info, req, parts).await {
-			policy::HeadroomOutcome::Bypass => return Ok(None),
-			policy::HeadroomOutcome::Failed(reason) => return hr.fail(&reason),
-			policy::HeadroomOutcome::Compressed { original, messages } => {
-				if let Err(e) = req.set_raw_messages(messages) {
-					return hr.fail(&format!("headroom returned unusable messages: {e}"));
-				}
-				original
+		req: &dyn RequestType,
+		headers: &::http::HeaderMap,
+		request_model: &str,
+	) -> Result<Vec<u8>, AIError> {
+		match self {
+			AIProvider::Anthropic(_) | AIProvider::Custom(_) => req.to_anthropic(),
+			AIProvider::Bedrock(_) => req.to_bedrock_token_count(headers),
+			AIProvider::Vertex(provider) => {
+				let body = req.to_anthropic()?;
+				provider.prepare_anthropic_count_tokens_body(body)
 			},
-		};
-		let model = req.model().clone().unwrap_or_default();
-		match self.marshal_request(
-			req,
-			&parts.headers,
-			original_format,
-			native_format,
-			&model,
-			policies,
-		) {
-			Ok(marshaled) => Ok(Some(marshaled)),
-			Err(e) => {
-				// revert so the fail-open marshal doesn't hit the same error
-				let _ = req.set_raw_messages(original);
-				hr.fail(&format!("compressed request failed to marshal: {e}"))
+			AIProvider::Azure(p)
+				if matches!(p.resource_type, azure::AzureResourceType::Foundry)
+					&& p.is_anthropic_model(Some(request_model)) =>
+			{
+				// Foundry's Anthropic-native count_tokens endpoint accepts the Anthropic wire format
+				// as-is (the model stays in the body, unlike Vertex which strips it).
+				req.to_anthropic()
 			},
+			_ => Err(AIError::UnsupportedConversion(strng::literal!(
+				"count_tokens not supported for this provider"
+			))),
 		}
 	}
 
@@ -2275,14 +2244,14 @@ fn map_compression_error(e: http::compression::Error, headers: &::http::HeaderMa
 	}
 }
 
-fn num_tokens_from_messages(
+pub(crate) fn num_tokens_from_messages(
 	model: &str,
 	messages: &[SimpleChatCompletionMessage],
 ) -> Result<u64, AIError> {
 	// NOTE: This estimator only accounts for textual content in normalized messages.
 	// Non-text items in Responses inputs (e.g., tool calls, images, files) are ignored here.
 	// Use provider token counting endpoints if you need precise totals for those cases.
-	let tokenizer = get_tokenizer(model).unwrap_or(Tokenizer::Cl100kBase);
+	let tokenizer = get_tokenizer(model).unwrap_or(Tokenizer::O200kBase);
 	if tokenizer != Tokenizer::Cl100kBase && tokenizer != Tokenizer::O200kBase {
 		// Chat completion is only supported chat models
 		return Err(AIError::UnsupportedModel);

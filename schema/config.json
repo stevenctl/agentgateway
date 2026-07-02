@@ -3650,6 +3650,17 @@
             }
           ]
         },
+        "headroom": {
+          "description": "Headroom context-compression settings.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Headroom"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "routes": {
           "description": "Route type overrides selected by request path suffix.",
           "type": "object",
@@ -4297,6 +4308,44 @@
         }
       },
       "additionalProperties": false
+    },
+    "Headroom": {
+      "description": "Headroom compresses context before it hits LLMs in an attempt to reduce cost.",
+      "type": "object",
+      "properties": {
+        "target": {
+          "description": "Backend for the Headroom instance (serves `/v1/compress` and `/v1/retrieve`).",
+          "$ref": "#/$defs/SimpleLocalBackendSerde"
+        },
+        "mode": {
+          "description": "Compression behavior\nTODO add CCR mode",
+          "$ref": "#/$defs/HeadroomMode",
+          "default": "compress"
+        },
+        "failureMode": {
+          "description": "Behavior when the headroom is unreachable or errors. Defaults to `failOpen`\n(compression is an optimization; a headroom issue should not drop LLM traffic).",
+          "$ref": "#/$defs/WebhookFailureMode",
+          "default": "failOpen"
+        },
+        "exactMeasurement": {
+          "description": "Measure the exact token count of the original (pre-compression) request via the\nprovider's count_tokens endpoint, in the background off the hot path. Supported when\nthe selected provider/model has a native count_tokens route; adds one free (but\nrate-limited) upstream call per compressed request.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "HeadroomMode": {
+      "oneOf": [
+        {
+          "description": "Round-trip request messages through `/v1/compress`.",
+          "type": "string",
+          "const": "compress"
+        }
+      ]
     },
     "RouteType": {
       "oneOf": [
@@ -9351,6 +9400,16 @@
               "type": "null"
             }
           ]
+        },
+        "headroom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Headroom"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -9529,6 +9588,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PromptCachingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "headroom": {
+          "description": "headroom configures the context-compression sidecar.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Headroom"
             },
             {
               "type": "null"

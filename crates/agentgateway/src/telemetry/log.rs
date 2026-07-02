@@ -56,6 +56,49 @@ fn u128_to_i64(value: u128) -> i64 {
 	value.min(i64::MAX as u128) as i64
 }
 
+#[derive(Debug, Clone)]
+struct CompressionReport {
+	pre_compression_input_tokens: u64,
+	input_tokens_billed: u64,
+	tokens_saved: i64,
+	cache_read_ratio: Option<f64>,
+	saved_cost: Option<f64>,
+}
+
+impl CompressionReport {
+	fn from_llm_info(info: &llm::LLMInfo, model_catalog: &ModelCatalog) -> Option<Self> {
+		// TODO for now we race and hope for the best (LLM call is slower than the count_tokens)
+		// as this reporting is best-effort; this is pretty bad and we also need to cancel the
+		// background count_tokens when the LLM call fails/completes; should we JoinHandle?
+		let pre_compression_input_tokens = info
+			.request
+			.compression
+			.as_ref()?
+			.pre_compression_input_tokens
+			.get()
+			.copied()?;
+		let input_tokens_billed =
+			llm::cost::billed_context_tokens(info.request.cache_convention, &info.response)?;
+		let tokens_saved =
+			u64_to_i64(Some(pre_compression_input_tokens))? - u64_to_i64(Some(input_tokens_billed))?;
+		let cache_read_ratio = info
+			.response
+			.cached_input_tokens
+			.zip((input_tokens_billed > 0).then_some(input_tokens_billed))
+			.map(|(cached, billed)| cached as f64 / billed as f64);
+		let saved_cost = (tokens_saved > 0)
+			.then_some(tokens_saved as u64)
+			.and_then(|saved| model_catalog.saved_cost(info, saved));
+		Some(Self {
+			pre_compression_input_tokens,
+			input_tokens_billed,
+			tokens_saved,
+			cache_read_ratio,
+			saved_cost,
+		})
+	}
+}
+
 fn kv_to_json(kv: &[(&str, Option<ValueBag>)]) -> Value {
 	let mut map = serde_json::Map::with_capacity(kv.len());
 	for (key, value) in kv {
@@ -659,6 +702,7 @@ impl DropOnLog {
 		route_identifier: &RouteIdentifier,
 		duration: Duration,
 		llm_response: Option<&LLMContext>,
+		compression: Option<&CompressionReport>,
 		custom_metric_fields: &CustomField,
 	) {
 		if let Some(llm_response) = llm_response {
@@ -708,6 +752,22 @@ impl DropOnLog {
 					.gen_ai_cost
 					.get_or_create(&gen_ai_labels)
 					.inc_by(cost);
+			}
+			if let Some(compression) = compression {
+				if compression.tokens_saved > 0 {
+					log
+						.metrics
+						.compression_saved_tokens
+						.get_or_create(&gen_ai_labels)
+						.inc_by(compression.tokens_saved as u64);
+				}
+				if let Some(saved_cost) = compression.saved_cost.filter(|cost| *cost > 0.0) {
+					log
+						.metrics
+						.compression_saved_cost
+						.get_or_create(&gen_ai_labels)
+						.inc_by(saved_cost);
+				}
 			}
 			if let Some(it) = llm_response.input_tokens {
 				log
@@ -1094,9 +1154,12 @@ impl Drop for DropOnLog {
 			let duration = end_time.duration_since(&log.start);
 			let enable_trace = log.tracer.is_some();
 
-			let mut llm_response: Option<LLMContext> = log
-				.llm_response
-				.take()
+			let llm_info = log.llm_response.take();
+			let compression_report = llm_info
+				.as_ref()
+				.and_then(|info| CompressionReport::from_llm_info(info, log.model_catalog.as_ref()));
+			let mut llm_response: Option<LLMContext> = llm_info
+				.clone()
 				.map(|llm_info| LLMContext::from_llm_info(llm_info, Some(log.model_catalog.as_ref())));
 			if let Some(llm_response) = llm_response.as_mut() {
 				llm_response.set_token_timing(log.start.as_instant(), end_time.as_instant());
@@ -1193,6 +1256,7 @@ impl Drop for DropOnLog {
 				&route_identifier,
 				duration,
 				llm_response.as_ref(),
+				compression_report.as_ref(),
 				&custom_metric_fields,
 			);
 			if let Some(mcp) = &mcp
@@ -1226,6 +1290,7 @@ impl Drop for DropOnLog {
 			let grpc = log.grpc_status.load();
 
 			let input_tokens = llm_response.as_ref().and_then(|l| l.input_tokens);
+			let compression = compression_report.as_ref();
 			let cost = llm_response.as_ref().and_then(|l| l.cost.as_ref());
 			let usage_cost_total = cost.map(|b| b.total().to_string());
 			let trace_cost_fields = if enable_trace {
@@ -1399,6 +1464,28 @@ impl Drop for DropOnLog {
 				(
 					"agw.ai.usage.cost.total",
 					usage_cost_total.as_deref().map(Into::into),
+				),
+				(
+					"agw.ai.compression.input_tokens_before_compression",
+					compression
+						.map(|h| h.pre_compression_input_tokens)
+						.map(Into::into),
+				),
+				(
+					"agw.ai.compression.input_tokens_billed",
+					compression.map(|h| h.input_tokens_billed).map(Into::into),
+				),
+				(
+					"agw.ai.compression.tokens_saved",
+					compression.map(|h| h.tokens_saved).map(Into::into),
+				),
+				(
+					"agw.ai.compression.cache_read_ratio",
+					compression.and_then(|h| h.cache_read_ratio).map(Into::into),
+				),
+				(
+					"agw.ai.compression.saved_cost",
+					compression.and_then(|h| h.saved_cost).map(Into::into),
 				),
 				// Not part of official semconv
 				(
@@ -2251,6 +2338,7 @@ mod tests {
 		.unwrap();
 		let request = llm::LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Completions,
 			native_format: None,
 			cache_convention: llm::CacheTokenConvention::InputIncludesCache,

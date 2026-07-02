@@ -38,6 +38,10 @@ pub trait RequestType: Send + Sync {
 	fn prepend_prompts(&mut self, prompts: Vec<SimpleChatCompletionMessage>);
 	fn append_prompts(&mut self, prompts: Vec<SimpleChatCompletionMessage>);
 	fn to_llm_request(&self, provider: Strng, tokenize: bool) -> Result<LLMRequest, AIError>;
+	fn to_count_tokens_request(&self) -> Option<count_tokens::Request> {
+		None
+	}
+
 	fn get_messages(&self) -> Vec<SimpleChatCompletionMessage>;
 	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>);
 

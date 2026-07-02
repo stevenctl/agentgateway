@@ -13,6 +13,7 @@ use crate::http::x_headers::TRACEPARENT;
 fn llm_request_with_tokens(input_tokens: Option<u64>) -> LLMRequest {
 	LLMRequest {
 		input_tokens,
+		compression: None,
 		input_format: InputFormat::Completions,
 		native_format: Some(custom::ProviderFormat::Completions),
 		cache_convention: CacheTokenConvention::pending(),
@@ -803,6 +804,7 @@ mod response {
 	pub fn dummy_llm_req(input_format: InputFormat) -> LLMRequest {
 		LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format,
 			native_format: input_format.provider_format_preferences().first().copied(),
 			cache_convention: CacheTokenConvention::pending(),
@@ -1466,6 +1468,7 @@ async fn process_response_routes_streaming_error_to_buffered_path() {
 
 	let req = LLMRequest {
 		input_tokens: None,
+		compression: None,
 		input_format: InputFormat::Completions,
 		native_format: Some(custom::ProviderFormat::Completions),
 		cache_convention: CacheTokenConvention::pending(),
@@ -1555,6 +1558,7 @@ async fn process_streaming_bedrock_completions_normalizes_sse_headers_and_done()
 			client,
 			LLMRequest {
 				input_tokens: None,
+				compression: None,
 				input_format: InputFormat::Completions,
 				native_format: Some(custom::ProviderFormat::Completions),
 				cache_convention: CacheTokenConvention::pending(),
@@ -1656,6 +1660,7 @@ fn setup_request_custom_path_override_wins_over_format_path() {
 	});
 	let llm_request = LLMRequest {
 		input_tokens: None,
+		compression: None,
 		input_format: InputFormat::Completions,
 		native_format: Some(custom::ProviderFormat::Messages),
 		cache_convention: CacheTokenConvention::pending(),
@@ -1690,6 +1695,7 @@ fn setup_request_custom_path_override_wins_over_format_path() {
 fn llm_request_for_path(request_model: &str) -> LLMRequest {
 	LLMRequest {
 		input_tokens: None,
+		compression: None,
 		input_format: InputFormat::Messages,
 		native_format: Some(custom::ProviderFormat::Messages),
 		cache_convention: CacheTokenConvention::pending(),
@@ -1820,6 +1826,7 @@ async fn bedrock_from_messages_stream_captures_completion() {
 	let llmresp = LLMInfo {
 		request: LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Messages,
 			native_format: Some(custom::ProviderFormat::Messages),
 			cache_convention: CacheTokenConvention::pending(),
@@ -1868,6 +1875,7 @@ async fn bedrock_from_messages_stream_skips_completion_when_disabled() {
 	let llmresp = LLMInfo {
 		request: LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Messages,
 			native_format: Some(custom::ProviderFormat::Messages),
 			cache_convention: CacheTokenConvention::pending(),
@@ -1912,6 +1920,7 @@ async fn messages_passthrough_stream_captures_completion() {
 	let llmresp = LLMInfo {
 		request: LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Messages,
 			native_format: Some(custom::ProviderFormat::Messages),
 			cache_convention: CacheTokenConvention::pending(),
@@ -1953,6 +1962,7 @@ async fn messages_passthrough_stream_skips_completion_when_disabled() {
 	let llmresp = LLMInfo {
 		request: LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Messages,
 			native_format: Some(custom::ProviderFormat::Messages),
 			cache_convention: CacheTokenConvention::pending(),
@@ -1989,6 +1999,7 @@ async fn responses_passthrough_stream_captures_completion() {
 	let llmresp = LLMInfo {
 		request: LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Responses,
 			native_format: Some(custom::ProviderFormat::Responses),
 			cache_convention: CacheTokenConvention::pending(),
@@ -2026,6 +2037,7 @@ async fn responses_passthrough_stream_skips_completion_when_disabled() {
 	let llmresp = LLMInfo {
 		request: LLMRequest {
 			input_tokens: None,
+			compression: None,
 			input_format: InputFormat::Responses,
 			native_format: Some(custom::ProviderFormat::Responses),
 			cache_convention: CacheTokenConvention::pending(),
@@ -2290,4 +2302,308 @@ fn fixed_providers_classify_by_family() {
 		),
 		CacheTokenConvention::InputIncludesCache,
 	);
+}
+
+mod headroom_exact_count {
+	use super::*;
+	use crate::llm::policy::{FailureMode, Headroom, HeadroomMode};
+	use crate::types::agent::SimpleBackend;
+
+	fn original_request(model: &str) -> types::messages::Request {
+		serde_json::from_value(json!({
+			"model": model,
+			"max_tokens": 1024,
+			"stream": true,
+			"messages": [{"role": "user", "content": "hello"}]
+		}))
+		.unwrap()
+	}
+
+	fn build(
+		provider: &AIProvider,
+		model: &str,
+		headers: &::http::HeaderMap,
+	) -> Option<(Request, SimpleBackend, BackendPolicies)> {
+		provider.build_exact_count_call(&mut original_request(model), headers)
+	}
+
+	fn azure_foundry_provider() -> AIProvider {
+		AIProvider::Azure(azure::Provider {
+			model: None,
+			resource_name: strng::new("myres"),
+			resource_type: azure::AzureResourceType::Foundry,
+			api_version: None,
+			project_name: Some(strng::new("myproj")),
+			cached_cred: Default::default(),
+		})
+	}
+
+	#[tokio::test]
+	async fn direct_anthropic_builds_native_side_call() {
+		let provider = AIProvider::Anthropic(anthropic::Provider { model: None });
+		let mut headers = ::http::HeaderMap::new();
+		headers.insert("x-api-key", "sk-ant-xxx".parse().unwrap());
+
+		let (req, backend, policies) =
+			build(&provider, "claude-sonnet-4-5", &headers).expect("anthropic supports exact count");
+
+		assert_eq!(req.uri().path(), "/v1/messages/count_tokens");
+		assert_eq!(req.uri().host(), Some("api.anthropic.com"));
+		assert_eq!(req.headers().get("x-api-key").unwrap(), "sk-ant-xxx");
+		assert_eq!(
+			req.headers().get("anthropic-version").unwrap(),
+			"2023-06-01"
+		);
+		assert!(matches!(
+			backend,
+			SimpleBackend::Opaque(_, Target::Hostname(host, 443)) if host == "api.anthropic.com"
+		));
+		assert!(policies.backend_tls.is_some());
+		assert!(policies.backend_auth.is_none());
+
+		let body = req.into_body().collect().await.unwrap().to_bytes();
+		let body: Value = serde_json::from_slice(&body).unwrap();
+		assert_eq!(body["model"], json!("claude-sonnet-4-5"));
+		assert_eq!(body["messages"][0]["content"], json!("hello"));
+		// count_tokens rejects extra inputs
+		assert!(body.get("max_tokens").is_none());
+		assert!(body.get("stream").is_none());
+	}
+
+	#[tokio::test]
+	async fn vertex_anthropic_builds_native_side_call() {
+		let provider = vertex_provider("claude-sonnet-4-5");
+		let headers = ::http::HeaderMap::new();
+
+		let (req, backend, policies) = build(&provider, "claude-sonnet-4-5", &headers)
+			.expect("vertex anthropic supports exact count");
+
+		assert_eq!(
+			req.uri().path(),
+			"/v1/projects/test-project/locations/global/publishers/anthropic/models/count-tokens:rawPredict"
+		);
+		assert_eq!(req.uri().host(), Some("aiplatform.googleapis.com"));
+		assert!(matches!(
+			backend,
+			SimpleBackend::Opaque(_, Target::Hostname(host, 443)) if host == "aiplatform.googleapis.com"
+		));
+		assert!(matches!(policies.backend_auth, Some(BackendAuth::Gcp(_))));
+
+		let body = req.into_body().collect().await.unwrap().to_bytes();
+		let body: Value = serde_json::from_slice(&body).unwrap();
+		assert_eq!(body["anthropic_version"], json!("vertex-2023-10-16"));
+		assert_eq!(body["model"], json!("claude-sonnet-4-5"));
+		assert!(body.get("max_tokens").is_none());
+	}
+
+	#[tokio::test]
+	async fn azure_foundry_anthropic_builds_native_side_call() {
+		let provider = azure_foundry_provider();
+		let headers = ::http::HeaderMap::new();
+
+		let (req, backend, policies) =
+			build(&provider, "claude-sonnet-4-5", &headers).expect("foundry claude supports exact count");
+
+		assert_eq!(req.uri().path(), "/anthropic/v1/messages/count_tokens");
+		assert_eq!(req.uri().host(), Some("myres.services.ai.azure.com"));
+		assert_eq!(
+			req.headers().get("anthropic-version").unwrap(),
+			"2023-06-01"
+		);
+		assert!(matches!(
+			backend,
+			SimpleBackend::Opaque(_, Target::Hostname(host, 443)) if host == "myres.services.ai.azure.com"
+		));
+		assert!(matches!(policies.backend_auth, Some(BackendAuth::Azure(_))));
+
+		let body = req.into_body().collect().await.unwrap().to_bytes();
+		let body: Value = serde_json::from_slice(&body).unwrap();
+		// Foundry keeps the model in the body, unlike Vertex which routes by path
+		assert_eq!(body["model"], json!("claude-sonnet-4-5"));
+	}
+
+	#[tokio::test]
+	async fn bedrock_anthropic_builds_native_side_call() {
+		let provider = bedrock_provider("anthropic.claude-3-5-sonnet-20241022-v2:0");
+		let headers = ::http::HeaderMap::new();
+
+		let (req, backend, policies) = build(
+			&provider,
+			"anthropic.claude-3-5-sonnet-20241022-v2:0",
+			&headers,
+		)
+		.expect("bedrock claude supports exact count");
+
+		assert_eq!(
+			req.uri().path(),
+			"/model/anthropic.claude-3-5-sonnet-20241022-v2:0/count-tokens"
+		);
+		assert_eq!(
+			req.uri().host(),
+			Some("bedrock-runtime.us-west-2.amazonaws.com")
+		);
+		assert!(matches!(
+			backend,
+			SimpleBackend::Opaque(_, Target::Hostname(host, 443)) if host == "bedrock-runtime.us-west-2.amazonaws.com"
+		));
+		assert!(matches!(policies.backend_auth, Some(BackendAuth::Aws(_))));
+
+		let body = req.into_body().collect().await.unwrap().to_bytes();
+		let body: Value = serde_json::from_slice(&body).unwrap();
+		assert!(body.get("input").is_some());
+	}
+
+	#[test]
+	fn unsupported_providers_skip_exact_count() {
+		let headers = ::http::HeaderMap::new();
+		// These providers/models have no count_tokens side-call route. OpenAI-compatible
+		// models can still use the local tiktoken path.
+		let skipped = [
+			(
+				AIProvider::OpenAI(openai::Provider { model: None }),
+				"gpt-4o",
+			),
+			(azure_foundry_provider(), "gpt-4o"),
+		];
+		for (provider, model) in skipped {
+			assert!(
+				build(&provider, model, &headers).is_none(),
+				"{} should skip exact count",
+				provider.provider()
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn count_input_tokens_translates_native_response() {
+		use crate::proxy::httpproxy::PolicyClient;
+		use crate::test_helpers::proxymock::{body_mock, setup_proxy_test};
+
+		let mock = body_mock(br#"{"input_tokens": 42}"#).await;
+		let client = PolicyClient::new(setup_proxy_test("{}").unwrap().pi);
+		let backend = SimpleBackend::Opaque(
+			ResourceName::new(strng::literal!("test"), strng::literal!("")),
+			Target::Address(*mock.address()),
+		);
+		let req = ::http::Request::builder()
+			.method(::http::Method::POST)
+			.uri(format!(
+				"http://{}/v1/messages/count_tokens",
+				mock.address()
+			))
+			.body(Body::from(&b"{}"[..]))
+			.unwrap();
+
+		let count =
+			types::count_tokens::count_input_tokens(&client, req, backend, BackendPolicies::default())
+				.await
+				.unwrap();
+		assert_eq!(count, 42);
+	}
+
+	#[tokio::test]
+	async fn count_input_tokens_errors_on_failure_status() {
+		use crate::proxy::httpproxy::PolicyClient;
+		use crate::test_helpers::proxymock::setup_proxy_test;
+
+		let mock = wiremock::MockServer::start().await;
+		wiremock::Mock::given(wiremock::matchers::path_regex("/.*"))
+			.respond_with(wiremock::ResponseTemplate::new(500))
+			.mount(&mock)
+			.await;
+		let client = PolicyClient::new(setup_proxy_test("{}").unwrap().pi);
+		let backend = SimpleBackend::Opaque(
+			ResourceName::new(strng::literal!("test"), strng::literal!("")),
+			Target::Address(*mock.address()),
+		);
+		let req = ::http::Request::builder()
+			.method(::http::Method::POST)
+			.uri(format!(
+				"http://{}/v1/messages/count_tokens",
+				mock.address()
+			))
+			.body(Body::from(&b"{}"[..]))
+			.unwrap();
+
+		let res =
+			types::count_tokens::count_input_tokens(&client, req, backend, BackendPolicies::default())
+				.await;
+		assert!(res.is_err());
+	}
+
+	async fn process_with_headroom(provider: AIProvider) -> (bytes::Bytes, LLMRequest) {
+		use crate::http::auth::BackendInfo;
+		use crate::test_helpers::proxymock::{body_mock, setup_proxy_test};
+		use crate::types::agent::{BackendTarget, SimpleBackendReference};
+
+		let compress = body_mock(
+			br#"{"messages":[{"role":"user","content":"compressed"}],"tokens_before":100,"tokens_after":40}"#,
+		)
+		.await;
+		let policy = Policy {
+			headroom: Some(Headroom {
+				target: SimpleBackendReference::InlineBackend(Target::Address(*compress.address())),
+				mode: HeadroomMode::Compress,
+				failure_mode: FailureMode::FailOpen,
+				exact_measurement: true,
+			}),
+			..Default::default()
+		};
+		let backend_info = BackendInfo {
+			target: BackendTarget::Invalid,
+			call_target: Target::from(("localhost", 443)),
+			inputs: setup_proxy_test("{}").unwrap().pi,
+		};
+		let req = ::http::Request::builder()
+			.uri("/v1/messages")
+			.header(::http::header::CONTENT_TYPE, "application/json")
+			.body(Body::from(
+				br#"{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}"#.to_vec(),
+			))
+			.unwrap();
+
+		let RequestResult::Success(forwarded, llm_request) = provider
+			.process_messages_request(&backend_info, Some(&policy), req, false, &mut None)
+			.await
+			.expect("request should not be rejected")
+		else {
+			panic!("expected forwarded request");
+		};
+		let body = forwarded.collect().await.unwrap().to_bytes();
+		(body, llm_request)
+	}
+
+	// The exact count side call is spawned off the hot path and cannot succeed here (no
+	// upstream); the request must still forward with the compressed body regardless.
+	#[tokio::test]
+	async fn exact_count_is_nonblocking_and_fail_open() {
+		let provider = AIProvider::Anthropic(anthropic::Provider { model: None });
+		let (body, llm_request) = process_with_headroom(provider).await;
+
+		let body: Value = serde_json::from_slice(&body).unwrap();
+		assert!(
+			body["messages"][0]["content"]
+				.to_string()
+				.contains("compressed")
+		);
+
+		let headroom = llm_request.compression.expect("headroom info recorded");
+		assert!(headroom.pre_compression_input_tokens.get().is_none());
+	}
+
+	#[tokio::test]
+	async fn openai_exact_count_uses_local_tokenizer() {
+		let provider = AIProvider::OpenAI(openai::Provider { model: None });
+		let (body, llm_request) = process_with_headroom(provider).await;
+
+		let body: Value = serde_json::from_slice(&body).unwrap();
+		assert!(
+			body["messages"][0]["content"]
+				.to_string()
+				.contains("compressed")
+		);
+
+		let compression = llm_request.compression.expect("compression info recorded");
+		assert!(compression.pre_compression_input_tokens.get().is_some());
+	}
 }
