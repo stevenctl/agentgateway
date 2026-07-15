@@ -174,7 +174,7 @@ impl Session {
 	) -> Result<(Cow<'a, str>, &'b str), UpstreamError> {
 		let (service_name, prompt) = self
 			.relay
-			.resolve_resource_name(ResolveKind::Prompt, name, ctx)
+			.resolve_resource_name(ResolveKind::Prompt, name, cel, ctx)
 			.await?;
 		span.rename_span(format!("{method} {service_name}"));
 		log.non_atomic_mutate(|l| {
@@ -523,6 +523,7 @@ impl Session {
 						let (service_name, tool) = Box::pin(self.relay.resolve_resource_name(
 							ResolveKind::Tool,
 							&name,
+							&cel,
 							&ctx,
 						))
 						.await?;
@@ -559,6 +560,7 @@ impl Session {
 						let (service_name, prompt) = Box::pin(self.relay.resolve_resource_name(
 							ResolveKind::Prompt,
 							&name,
+							&cel,
 							&ctx,
 						))
 						.await?;

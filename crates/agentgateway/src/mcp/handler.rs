@@ -59,18 +59,13 @@ fn duplicate_names<'a>(enabled: bool, names: impl Iterator<Item = &'a str>) -> H
 	duplicates
 }
 
-/// Split per-target list results and, when rejecting duplicates, drop names
-/// served by more than one target.
-fn per_target_deduped<T>(
-	streams: Vec<(Strng, ServerResult)>,
+/// When rejecting duplicates, drop names served by more than one target.
+/// Callers must RBAC-filter items first so denied copies don't count.
+fn drop_duplicates<T>(
+	per_target: Vec<(Strng, Vec<T>)>,
 	reject_duplicates: bool,
-	extract: impl Fn(ServerResult) -> Vec<T>,
 	name: impl for<'a> Fn(&'a T) -> &'a str,
 ) -> Vec<(Strng, Vec<T>)> {
-	let per_target = streams
-		.into_iter()
-		.map(|(server_name, s)| (server_name, extract(s)))
-		.collect_vec();
 	let duplicates = duplicate_names(
 		reject_duplicates,
 		per_target
@@ -168,6 +163,14 @@ impl ResolveKind {
 		match self {
 			ResolveKind::Tool => "tool",
 			ResolveKind::Prompt => "prompt",
+		}
+	}
+
+	fn resource_type(&self, target: &str, name: &str) -> rbac::ResourceType {
+		let id = rbac::ResourceId::new(target.to_string(), name.to_string());
+		match self {
+			ResolveKind::Tool => rbac::ResourceType::Tool(id),
+			ResolveKind::Prompt => rbac::ResourceType::Prompt(id),
 		}
 	}
 
@@ -313,10 +316,11 @@ impl Relay {
 		&'a self,
 		kind: ResolveKind,
 		res: &'b str,
+		cel: &CelExecWrapper,
 		ctx: &IncomingRequestContext,
 	) -> Result<(Cow<'a, str>, &'b str), UpstreamError> {
 		if self.needs_resolution() {
-			let target = self.resolve_unprefixed(kind, res, ctx).await?;
+			let target = self.resolve_unprefixed(kind, res, cel, ctx).await?;
 			return Ok((Cow::Owned(target.to_string()), res));
 		}
 		let (target, name) = self.parse_resource_name(res)?;
@@ -331,6 +335,7 @@ impl Relay {
 		&self,
 		kind: ResolveKind,
 		name: &str,
+		cel: &CelExecWrapper,
 		ctx: &IncomingRequestContext,
 	) -> Result<Strng, UpstreamError> {
 		let futs: Vec<_> = self
@@ -346,6 +351,14 @@ impl Relay {
 		for (target, res) in futures::future::join_all(futs).await {
 			match res {
 				Ok(true) => {
+					// Match the list-merge behavior: RBAC-denied copies are invisible, so
+					// they neither resolve nor make an allowed copy ambiguous.
+					if !self
+						.policies
+						.validate(&kind.resource_type(&target, name), cel)
+					{
+						continue;
+					}
 					if owner.is_some() {
 						return Err(UpstreamError::InvalidRequest(format!(
 							"{} {name} is served by multiple targets",
@@ -617,21 +630,16 @@ impl Relay {
 		let prefix_names = self.prefix_names();
 		let reject_duplicates = self.needs_resolution();
 		Box::new(move |streams, cel| {
-			let per_target = per_target_deduped(
-				streams,
-				reject_duplicates,
-				|s| match s {
-					ServerResult::ListToolsResult(ltr) => ltr.tools,
-					_ => vec![],
-				},
-				|tool| tool.name.as_ref(),
-			);
-			let tools = per_target
+			// RBAC before dedupe: a denied copy of a name must not shadow an allowed one.
+			let per_target = streams
 				.into_iter()
-				.flat_map(|(server_name, tools)| {
-					tools
+				.map(|(server_name, s)| {
+					let tools = match s {
+						ServerResult::ListToolsResult(ltr) => ltr.tools,
+						_ => vec![],
+					};
+					let tools = tools
 						.into_iter()
-						// Apply authorization policies, filtering tools that are not allowed.
 						.filter(|t| {
 							policies.validate(
 								&rbac::ResourceType::Tool(rbac::ResourceId::new(
@@ -641,6 +649,15 @@ impl Relay {
 								cel,
 							)
 						})
+						.collect_vec();
+					(server_name, tools)
+				})
+				.collect_vec();
+			let tools = drop_duplicates(per_target, reject_duplicates, |tool| tool.name.as_ref())
+				.into_iter()
+				.flat_map(|(server_name, tools)| {
+					tools
+						.into_iter()
 						// Rename to handle multiplexing
 						.map(|mut t| {
 							t.name = Cow::Owned(resource_name(prefix_names, server_name.as_str(), &t.name));
@@ -781,19 +798,15 @@ impl Relay {
 		let prefix_names = self.prefix_names();
 		let reject_duplicates = self.needs_resolution();
 		Box::new(move |streams, cel| {
-			let per_target = per_target_deduped(
-				streams,
-				reject_duplicates,
-				|s| match s {
-					ServerResult::ListPromptsResult(lpr) => lpr.prompts,
-					_ => vec![],
-				},
-				|prompt| prompt.name.as_str(),
-			);
-			let prompts = per_target
+			// RBAC before dedupe: a denied copy of a name must not shadow an allowed one.
+			let per_target = streams
 				.into_iter()
-				.flat_map(|(server_name, prompts)| {
-					prompts
+				.map(|(server_name, s)| {
+					let prompts = match s {
+						ServerResult::ListPromptsResult(lpr) => lpr.prompts,
+						_ => vec![],
+					};
+					let prompts = prompts
 						.into_iter()
 						.filter(|p| {
 							policies.validate(
@@ -804,6 +817,15 @@ impl Relay {
 								cel,
 							)
 						})
+						.collect_vec();
+					(server_name, prompts)
+				})
+				.collect_vec();
+			let prompts = drop_duplicates(per_target, reject_duplicates, |prompt| prompt.name.as_str())
+				.into_iter()
+				.flat_map(|(server_name, prompts)| {
+					prompts
+						.into_iter()
 						.map(|mut p| {
 							p.name = resource_name(prefix_names, server_name.as_str(), &p.name);
 							p

@@ -452,14 +452,18 @@ async fn apps_rbac_denied_ui_resource_strips_tool_meta() {
 	);
 }
 
-fn never_prefix_proxy(servers: Vec<(&str, SocketAddr, bool)>, stateful: bool) -> TestBind {
+fn never_prefix_proxy(
+	servers: Vec<(&str, SocketAddr, bool)>,
+	stateful: bool,
+	policies: Vec<BackendTrafficPolicy>,
+) -> TestBind {
 	setup_proxy_test("{}")
 		.unwrap()
 		.with_multiplex_mcp_backend_prefix_mode(
 			"mcp",
 			servers,
 			stateful,
-			vec![],
+			policies,
 			crate::types::agent::McpPrefixMode::Never,
 		)
 		.with_bind(simple_bind())
@@ -473,6 +477,7 @@ async fn multiplex_never_prefix_routes_unprefixed_names() {
 	let t = never_prefix_proxy(
 		vec![("a", apps.addr, false), ("b", other.addr, false)],
 		true,
+		vec![],
 	);
 	let io = t.serve_real_listener(strng::new("bind")).await;
 	let client = mcp_streamable_client_with_ui(io).await;
@@ -558,7 +563,11 @@ async fn multiplex_never_prefix_routes_unprefixed_names() {
 async fn multiplex_never_prefix_drops_ambiguous_names() {
 	let a = mock_streamable_http_server(true).await;
 	let b = mock_streamable_http_server(true).await;
-	let t = never_prefix_proxy(vec![("a", a.addr, false), ("b", b.addr, false)], true);
+	let t = never_prefix_proxy(
+		vec![("a", a.addr, false), ("b", b.addr, false)],
+		true,
+		vec![],
+	);
 	let io = t.serve_real_listener(strng::new("bind")).await;
 	let client = mcp_streamable_client(io).await;
 
@@ -580,12 +589,77 @@ async fn multiplex_never_prefix_drops_ambiguous_names() {
 }
 
 #[tokio::test]
+async fn multiplex_never_prefix_rbac_denied_copy_is_not_a_duplicate() {
+	let a = mock_streamable_http_server(true).await;
+	let b = mock_streamable_http_server(true).await;
+	// Both targets serve echo/example_prompt, but target b's copies are denied,
+	// so the names are unambiguous for this caller and must resolve to a.
+	let deny_b = McpAuthorization::new(RuleSet::new(PolicySet::new(
+		vec![],
+		vec![
+			Arc::new(cel::Expression::new_strict(r#"mcp.tool.target == "b""#).unwrap()),
+			Arc::new(cel::Expression::new_strict(r#"mcp.prompt.target == "b""#).unwrap()),
+		],
+		vec![],
+	)));
+	let t = never_prefix_proxy(
+		vec![("a", a.addr, false), ("b", b.addr, false)],
+		true,
+		vec![BackendTrafficPolicy::McpAuthorization(deny_b)],
+	);
+	let io = t.serve_real_listener(strng::new("bind")).await;
+	let client = mcp_streamable_client(io).await;
+
+	let tools = client.list_tools(None).await.unwrap();
+	assert_eq!(
+		tools.tools.iter().filter(|t| t.name == "echo").count(),
+		1,
+		"allowed copy must survive the dedupe"
+	);
+	let prompts = client.list_prompts(None).await.unwrap();
+	assert_eq!(
+		prompts
+			.prompts
+			.iter()
+			.filter(|p| p.name == "example_prompt")
+			.count(),
+		1
+	);
+
+	let ctr = client
+		.call_tool(
+			rmcp::model::CallToolRequestParams::new("echo").with_arguments(
+				serde_json::json!({"hi": "world"})
+					.as_object()
+					.cloned()
+					.unwrap(),
+			),
+		)
+		.await
+		.unwrap();
+	assert_eq!(&ctr.content[0].as_text().unwrap().text, r#"{"hi":"world"}"#);
+	let prompt = client
+		.get_prompt(
+			rmcp::model::GetPromptRequestParams::new("example_prompt").with_arguments(
+				serde_json::json!({"message": "hello"})
+					.as_object()
+					.cloned()
+					.unwrap(),
+			),
+		)
+		.await
+		.unwrap();
+	assert!(!prompt.messages.is_empty());
+}
+
+#[tokio::test]
 async fn multiplex_never_prefix_resolves_names_on_later_pages() {
 	let paging = mock_paging_streamable_http_server().await;
 	let other = mock_streamable_http_server(true).await;
 	let t = never_prefix_proxy(
 		vec![("a", paging.addr, false), ("b", other.addr, false)],
 		true,
+		vec![],
 	);
 	let io = t.serve_real_listener(strng::new("bind")).await;
 	let client = mcp_streamable_client(io).await;
@@ -606,6 +680,7 @@ async fn stateless_multiplex_never_prefix_tool_call_resolves_target() {
 	let t = never_prefix_proxy(
 		vec![("a", apps.addr, false), ("b", other.addr, false)],
 		false,
+		vec![],
 	);
 	let io = t.serve_real_listener(strng::new("bind")).await;
 	let client = mcp_streamable_client(io).await;
