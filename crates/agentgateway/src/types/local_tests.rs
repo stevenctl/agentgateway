@@ -410,6 +410,11 @@ async fn test_basic_config() {
 }
 
 #[tokio::test]
+async fn test_consistent_hash_config() {
+	test_config_parsing("consistent_hash").await;
+}
+
+#[tokio::test]
 async fn test_mcp_config() {
 	test_config_parsing("mcp").await;
 }

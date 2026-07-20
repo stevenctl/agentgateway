@@ -259,6 +259,8 @@ pub struct BackendPolicies {
 
 	pub session_persistence: Option<http::sessionpersistence::Policy>,
 
+	pub load_balancing: Option<http::loadbalancing::Policy>,
+
 	pub health: Option<health::Policy>,
 
 	/// Internal-only override for destination endpoint selection.
@@ -313,6 +315,7 @@ impl BackendPolicies {
 			},
 			transformation: other.transformation.or(self.transformation),
 			session_persistence: other.session_persistence.or(self.session_persistence),
+			load_balancing: other.load_balancing.or(self.load_balancing),
 			health: other.health.or(self.health),
 			override_dest: other.override_dest.or(self.override_dest),
 		}
@@ -347,6 +350,11 @@ impl BackendPolicies {
 		}
 		if let Some(health) = self.health.as_ref() {
 			health.register_expressions(ctx);
+		}
+		if let Some(lb) = self.load_balancing.as_ref() {
+			for expr in lb.expressions() {
+				ctx.register_expression(expr);
+			}
 		}
 	}
 }
@@ -1318,6 +1326,9 @@ impl Store {
 				},
 				BackendTrafficPolicy::SessionPersistence(p) => {
 					pol.session_persistence.get_or_insert_with(|| p.clone());
+				},
+				BackendTrafficPolicy::LoadBalancing(p) => {
+					pol.load_balancing.get_or_insert_with(|| p.clone());
 				},
 				BackendTrafficPolicy::Health(p) => {
 					pol.health.get_or_insert_with(|| p.clone());

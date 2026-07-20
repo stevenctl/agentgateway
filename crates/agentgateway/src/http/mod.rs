@@ -8,6 +8,7 @@ mod buflist;
 pub mod cors;
 pub mod delay;
 pub mod jwt;
+pub mod loadbalancing;
 pub mod localratelimit;
 pub mod retry;
 pub mod route;

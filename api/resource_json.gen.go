@@ -1590,6 +1590,39 @@ func (this *BackendPolicySpec_McpGuardrails_Processor) UnmarshalJSON(b []byte) e
 	return ResourceUnmarshaler.Unmarshal(bytes.NewReader(b), this)
 }
 
+// MarshalJSON is a custom marshaler for BackendPolicySpec_LoadBalancing
+func (this *BackendPolicySpec_LoadBalancing) MarshalJSON() ([]byte, error) {
+	str, err := ResourceMarshaler.MarshalToString(this)
+	return []byte(str), err
+}
+
+// UnmarshalJSON is a custom unmarshaler for BackendPolicySpec_LoadBalancing
+func (this *BackendPolicySpec_LoadBalancing) UnmarshalJSON(b []byte) error {
+	return ResourceUnmarshaler.Unmarshal(bytes.NewReader(b), this)
+}
+
+// MarshalJSON is a custom marshaler for BackendPolicySpec_LoadBalancing_ConsistentHash
+func (this *BackendPolicySpec_LoadBalancing_ConsistentHash) MarshalJSON() ([]byte, error) {
+	str, err := ResourceMarshaler.MarshalToString(this)
+	return []byte(str), err
+}
+
+// UnmarshalJSON is a custom unmarshaler for BackendPolicySpec_LoadBalancing_ConsistentHash
+func (this *BackendPolicySpec_LoadBalancing_ConsistentHash) UnmarshalJSON(b []byte) error {
+	return ResourceUnmarshaler.Unmarshal(bytes.NewReader(b), this)
+}
+
+// MarshalJSON is a custom marshaler for BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie
+func (this *BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie) MarshalJSON() ([]byte, error) {
+	str, err := ResourceMarshaler.MarshalToString(this)
+	return []byte(str), err
+}
+
+// UnmarshalJSON is a custom unmarshaler for BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie
+func (this *BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie) UnmarshalJSON(b []byte) error {
+	return ResourceUnmarshaler.Unmarshal(bytes.NewReader(b), this)
+}
+
 // MarshalJSON is a custom marshaler for StaticBackend
 func (this *StaticBackend) MarshalJSON() ([]byte, error) {
 	str, err := ResourceMarshaler.MarshalToString(this)

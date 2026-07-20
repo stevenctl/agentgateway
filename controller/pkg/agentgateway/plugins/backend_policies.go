@@ -37,6 +37,7 @@ const (
 	mcpAuthenticationPolicySuffix = ":mcp-authentication"
 	mcpGuardrailsPolicySuffix     = ":mcp-guardrails"
 	healthPolicySuffix            = ":health"
+	loadBalancingPolicySuffix     = ":load-balancing"
 )
 
 func translateAwsSessionTags(tags []agentgateway.AwsSessionTag) []*api.AwsSessionTag {
@@ -177,6 +178,10 @@ func translateBackendPolicyToAgw(
 
 	if s := backend.Health; s != nil {
 		appendPolicy("backendHealth")(translateBackendHealthPolicy(policy))
+	}
+
+	if s := backend.LoadBalancing; s != nil {
+		appendPolicy("backendLoadBalancing")(translateBackendLoadBalancing(policy))
 	}
 
 	if s := backend.Transformation; s != nil {
@@ -353,6 +358,49 @@ func translateBackendHealthPolicy(policy *agentgateway.AgentgatewayPolicy) (*api
 	}
 
 	return evictPolicy, errors.Join(errs...)
+}
+
+func translateBackendLoadBalancing(policy *agentgateway.AgentgatewayPolicy) (*api.Policy, error) {
+	var errs []error
+
+	lb := policy.Spec.Backend.LoadBalancing
+	ch := lb.ConsistentHash
+	chProto := &api.BackendPolicySpec_LoadBalancing_ConsistentHash{}
+	switch {
+	case ch.Header != nil:
+		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Header{Header: *ch.Header}
+	case ch.Cookie != nil:
+		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie_{
+			Cookie: &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie{Name: ch.Cookie.Name},
+		}
+	case ch.SourceIP != nil:
+		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_SourceIp{SourceIp: *ch.SourceIP}
+	case ch.QueryParam != nil:
+		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_QueryParam{QueryParam: *ch.QueryParam}
+	case ch.Expression != nil:
+		expr := *castCELPtr(ch.Expression, func(expr agentgateway.CELExpression) {
+			errs = append(errs, fmt.Errorf("backend loadBalancing expression is not a valid CEL expression: %s", expr))
+		})
+		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Expression{Expression: expr}
+	default:
+		errs = append(errs, fmt.Errorf("backend loadBalancing consistentHash requires a hash key"))
+	}
+
+	p := &api.Policy{
+		Key:  policy.Namespace + "/" + policy.Name + loadBalancingPolicySuffix,
+		Name: TypedResourceName(wellknown.AgentgatewayPolicyGVK.Kind, policy),
+		Kind: &api.Policy_Backend{
+			Backend: &api.BackendPolicySpec{
+				Kind: &api.BackendPolicySpec_LoadBalancing_{
+					LoadBalancing: &api.BackendPolicySpec_LoadBalancing{
+						ConsistentHash: chProto,
+					},
+				},
+			},
+		},
+	}
+
+	return p, errors.Join(errs...)
 }
 
 func translateBackendTCP(ctx PolicyCtx, policy *agentgateway.AgentgatewayPolicy, name string) (*api.Policy, error) {

@@ -323,6 +323,8 @@ async fn apply_backend_policies(
 		transformation,
 		// TODO: implement session persistence
 		session_persistence: _,
+		// Applied at endpoint selection (build_simple_backend_call)
+		load_balancing: _,
 		// Applied elsewhere
 		request_mirror: _,
 		// Applied elsewhere
@@ -1849,6 +1851,8 @@ async fn apply_inference_routing(
 				InferenceRoutingDestinationMode::Passthrough
 			),
 		inference_failed_open: inference_result.failed_open,
+		// Set by the caller once the request hash is computed.
+		lb_hash: None,
 	};
 
 	Ok((maybe_inference, service_override))
@@ -1873,8 +1877,15 @@ async fn build_simple_backend_call(
 	),
 	ProxyResponse,
 > {
-	let (maybe_inference, service_override) =
+	let (maybe_inference, mut service_override) =
 		apply_inference_routing(&policies, policy_client, req, log, response_policies).await?;
+	service_override.lb_hash = policies.load_balancing.as_ref().and_then(|lb| {
+		let source_ip = req
+			.extensions()
+			.get::<TCPConnectionInfo>()
+			.map(|t| t.peer_addr.ip());
+		lb.request_hash(req, source_ip)
+	});
 	let backend_call = match backend {
 		SimpleBackend::Service(svc, port) => {
 			// If user explicitly set auto hostname, we support it for Service.
@@ -2720,7 +2731,13 @@ pub fn build_service_call(
 	let workloads = &discovery.workloads;
 	let (ep, handle, wl) = svc
 		.endpoints
-		.select_endpoint(workloads, svc.as_ref(), port, service_override.destination)
+		.select_endpoint(
+			workloads,
+			svc.as_ref(),
+			port,
+			service_override.destination,
+			service_override.lb_hash,
+		)
 		.ok_or(ProxyError::NoHealthyEndpoints)?;
 
 	let target_port = select_service_target_port(
@@ -2929,9 +2946,10 @@ fn resolve_service_endpoint(
 	svc: &Service,
 	port: u16,
 ) -> Option<(SocketAddr, Vec<Identity>, Arc<Workload>)> {
-	let (ep, _handle, wl) = svc
-		.endpoints
-		.select_endpoint(&discovery.workloads, svc, port, None)?;
+	let (ep, _handle, wl) =
+		svc
+			.endpoints
+			.select_endpoint(&discovery.workloads, svc, port, None, None)?;
 	// TODO: plumb `_handle` through the waypoint/gateway transports so endpoint selection
 	// keeps EWMA, eviction, and latency feedback.
 	let resolved_port = select_service_target_port(ep.as_ref(), svc, port, None, false)?;
@@ -3845,6 +3863,8 @@ pub struct ServiceCallOverride {
 	pub destination: Option<SocketAddr>,
 	pub destination_passthrough: bool,
 	pub inference_failed_open: bool,
+	/// Consistent-hash key for endpoint selection, from a loadBalancing backend policy.
+	pub lb_hash: Option<u64>,
 }
 
 #[derive(Debug, Default)]

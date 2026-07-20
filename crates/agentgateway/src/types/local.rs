@@ -1528,6 +1528,7 @@ impl LocalBackend {
 					health: None,
 					ext_authz: None,
 					authorization: None,
+					load_balancing: None,
 				}
 				.translate(resources)
 				.await?
@@ -2406,6 +2407,9 @@ pub struct LocalBackendPolicies {
 	/// Mark this as LLM traffic to enable LLM processing.
 	#[serde(default)]
 	pub ai: Option<llm::Policy>,
+	/// Load balancing behavior when selecting an endpoint for this backend.
+	#[serde(default)]
+	pub load_balancing: Option<http::loadbalancing::Policy>,
 }
 
 enum InferenceRoutingScope {
@@ -2464,6 +2468,7 @@ impl LocalBackendPolicies {
 			health,
 			ext_authz,
 			authorization,
+			load_balancing,
 		} = self;
 		let mut pols = vec![];
 		if let Some(p) = tcp {
@@ -2526,6 +2531,9 @@ impl LocalBackendPolicies {
 			pols.push(BackendTrafficPolicy::Health(p.try_into().map_err(
 				|e: crate::cel::Error| anyhow::anyhow!("health.unhealthyExpression: {}", e),
 			)?));
+		}
+		if let Some(p) = load_balancing {
+			pols.push(BackendTrafficPolicy::LoadBalancing(p));
 		}
 		Ok(pols)
 	}

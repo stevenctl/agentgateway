@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../../schema/local.json
+binds:
+- port: 3000
+  listeners:
+  - routes:
+    - matches:
+      - path:
+          pathPrefix: /header
+      backends:
+      - host: example.com:8080
+        policies:
+          loadBalancing:
+            consistentHash:
+              header: x-session-id
+    - matches:
+      - path:
+          pathPrefix: /cookie
+      backends:
+      - host: example.com:8080
+        policies:
+          loadBalancing:
+            consistentHash:
+              cookie:
+                name: sid
+    - matches:
+      - path:
+          pathPrefix: /source-ip
+      backends:
+      - host: example.com:8080
+        policies:
+          loadBalancing:
+            consistentHash:
+              sourceIp: true
+    - matches:
+      - path:
+          pathPrefix: /expression
+      backends:
+      - host: example.com:8080
+        policies:
+          loadBalancing:
+            consistentHash:
+              expression: 'request.headers["x-user"]'

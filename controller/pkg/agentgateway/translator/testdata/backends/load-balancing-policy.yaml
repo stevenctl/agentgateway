@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: default
+spec:
+  selector:
+    app: echo
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: lb-policy
+  namespace: default
+spec:
+  targetRefs:
+  - group: ""
+    kind: Service
+    name: echo
+  backend:
+    loadBalancing:
+      consistentHash:
+        header: x-session-id
+---
+# Output
+output:
+- gateway:
+    Name: basic
+    Namespace: default
+  resource:
+    policy:
+      backend:
+        loadBalancing:
+          consistentHash:
+            header: x-session-id
+      key: default/lb-policy:load-balancing:default/echo.default.svc.cluster.local
+      name:
+        kind: AgentgatewayPolicy
+        name: lb-policy
+        namespace: default
+      target:
+        service:
+          hostname: echo.default.svc.cluster.local
+          namespace: default
+- canonical: true
+  hostname: echo.default.svc.cluster.local
+  name: echo
+  namespace: default
+  ports:
+  - servicePort: 8080
+    targetPort: 8080
+status: []
