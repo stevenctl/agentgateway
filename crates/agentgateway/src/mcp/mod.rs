@@ -2,6 +2,7 @@ mod apps;
 pub(crate) mod auth;
 pub(crate) mod guardrails;
 mod handler;
+mod list_cache;
 mod mergestream;
 mod rbac;
 mod router;

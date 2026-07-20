@@ -22,6 +22,7 @@ use tracing::{debug, info, warn};
 use crate::http::Response;
 use crate::http::sessionpersistence::MCPSession;
 use crate::mcp;
+use crate::mcp::list_cache::{AccumulatedNames, ListCache};
 use crate::mcp::mergestream::{MergeFn, Messages};
 use crate::mcp::rbac::{CelExecWrapper, McpAuthorizationSet};
 use crate::mcp::router::McpBackendGroup;
@@ -162,7 +163,7 @@ pub(super) fn rewrite_resource_messages(
 }
 
 /// What kind of name is being resolved to a target (`prefixMode: never`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ResolveKind {
 	Tool,
 	Prompt,
@@ -214,6 +215,7 @@ impl ResolveKind {
 #[derive(Debug, Clone)]
 pub struct Relay {
 	pub(crate) upstreams: Arc<upstream::UpstreamGroup>,
+	list_cache: Arc<ListCache>,
 	pub policies: McpAuthorizationSet,
 	pub(crate) mcp_guardrails: Option<Arc<crate::mcp::guardrails::McpGuardrails>>,
 	pub(crate) policy_client: PolicyClient,
@@ -244,6 +246,7 @@ impl Relay {
 	) -> Result<Self, mcp::Error> {
 		Ok(Self {
 			upstreams: Arc::new(upstream::UpstreamGroup::new(client.clone(), backend)?),
+			list_cache: Arc::new(ListCache::default()),
 			policies,
 			mcp_guardrails: None,
 			policy_client: client,
@@ -252,6 +255,7 @@ impl Relay {
 	pub fn with_policies(&self, policies: McpAuthorizationSet) -> Self {
 		Self {
 			upstreams: self.upstreams.clone(),
+			list_cache: self.list_cache.clone(),
 			policies,
 			mcp_guardrails: self.mcp_guardrails.clone(),
 			policy_client: self.policy_client.clone(),
@@ -267,7 +271,9 @@ impl Relay {
 		let target = target.to_string();
 		let default_target_name = self.upstreams.default_target_name.clone();
 		let policies = self.policies.clone();
+		let list_cache = self.list_cache.clone();
 		stream.map_server_messages(move |message| {
+			list_cache.invalidate_from_message(&target, &message);
 			let message = rewrite_resource_messages(default_target_name.as_ref(), &target, message);
 
 			let mut resource_allowed = |uri: &str| {
@@ -329,20 +335,19 @@ impl Relay {
 	}
 
 	/// Find the single target serving the unprefixed `name` by listing every
-	/// target at call time.
-	/// TODO cache list results so every tool call/prompt get doesn't require making
-	/// tons of extra list calls to every upstream.
+	/// target at call time, reusing cached list results where allowed.
 	async fn resolve_unprefixed(
 		&self,
 		kind: ResolveKind,
 		name: &str,
 		ctx: &IncomingRequestContext,
 	) -> Result<Strng, UpstreamError> {
+		let list_cache = &self.list_cache;
 		let futs: Vec<_> = self
 			.upstreams
 			.iter_named()
 			.map(|(target, con)| async move {
-				let res = Self::serves_name(&con, kind, name, ctx).await;
+				let res = Self::serves_name(&con, target.as_str(), kind, name, list_cache, ctx).await;
 				(target, res)
 			})
 			.collect();
@@ -378,32 +383,46 @@ impl Relay {
 
 	/// Page through one target's `kind` list until `name` is found or the pages
 	/// run out. `Ok(false)` includes targets that don't support the list method.
+	/// Answers from the cache when it can; names seen while paging are cached
+	/// for later resolutions.
 	async fn serves_name(
 		con: &upstream::Upstream,
+		target: &str,
 		kind: ResolveKind,
 		name: &str,
+		list_cache: &ListCache,
 		ctx: &IncomingRequestContext,
 	) -> Result<bool, UpstreamError> {
+		let lookup = list_cache.lookup(target, kind, name);
+		if let Some(served) = lookup.served {
+			return Ok(served);
+		}
 		// Gateway-generated ids: reusing the client's id here would make the upstream
 		// see it twice (list probe, then the forwarded call) in one session.
 		static RESOLVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 		// Bounds paging against upstreams that return cursors forever.
 		const MAX_LIST_PAGES: usize = 64;
 		let mut cursor = None;
+		let mut seen = AccumulatedNames::default();
 		for _ in 0..MAX_LIST_PAGES {
 			let seq = RESOLVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 			let req = JsonRpcRequest::new(
 				RequestId::String(format!("agw-resolve-{seq}").into()),
 				kind.list_request(cursor),
 			);
-			let Some(result) = Self::first_response(con.generic_stream(req, ctx).await?).await? else {
+			let Some(result) =
+				Self::first_response(con.generic_stream(req, ctx).await?, target, list_cache).await?
+			else {
 				return Ok(false);
 			};
+			seen.add_page(kind, &result);
 			if kind.contains_name(&result, name) {
+				list_cache.insert(target, kind, lookup.generation, seen);
 				return Ok(true);
 			}
 			cursor = kind.next_cursor(&result);
 			if cursor.is_none() {
+				list_cache.insert(target, kind, lookup.generation, seen);
 				return Ok(false);
 			}
 		}
@@ -415,9 +434,18 @@ impl Relay {
 
 	/// Consume a response stream until the first result, error data, or end.
 	/// `Ok(None)` means the target rejected the list method as unsupported.
-	async fn first_response(stream: Messages) -> Result<Option<ServerResult>, UpstreamError> {
+	/// Probe streams bypass the session's message rewriting, so list_changed
+	/// notifications seen here must invalidate the cache directly.
+	async fn first_response(
+		stream: Messages,
+		target: &str,
+		list_cache: &ListCache,
+	) -> Result<Option<ServerResult>, UpstreamError> {
 		let mut stream = std::pin::pin!(stream);
 		while let Some(msg) = stream.next().await {
+			if let Ok(message) = &msg {
+				list_cache.invalidate_from_message(target, message);
+			}
 			match msg {
 				Ok(ServerJsonRpcMessage::Response(resp)) => return Ok(Some(resp.result)),
 				Ok(ServerJsonRpcMessage::Error(err)) => {
