@@ -1879,13 +1879,10 @@ async fn build_simple_backend_call(
 > {
 	let (maybe_inference, mut service_override) =
 		apply_inference_routing(&policies, policy_client, req, log, response_policies).await?;
-	service_override.lb_hash = policies.load_balancing.as_ref().and_then(|lb| {
-		let source_ip = req
-			.extensions()
-			.get::<TCPConnectionInfo>()
-			.map(|t| t.peer_addr.ip());
-		lb.request_hash(req, source_ip)
-	});
+	service_override.lb_hash = policies
+		.load_balancing
+		.as_ref()
+		.and_then(|lb| lb.request_hash(req));
 	let backend_call = match backend {
 		SimpleBackend::Service(svc, port) => {
 			// If user explicitly set auto hostname, we support it for Service.

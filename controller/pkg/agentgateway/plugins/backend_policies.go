@@ -364,26 +364,17 @@ func translateBackendLoadBalancing(policy *agentgateway.AgentgatewayPolicy) (*ap
 	var errs []error
 
 	lb := policy.Spec.Backend.LoadBalancing
-	ch := lb.ConsistentHash
-	chProto := &api.BackendPolicySpec_LoadBalancing_ConsistentHash{}
+	lbProto := &api.BackendPolicySpec_LoadBalancing{}
 	switch {
-	case ch.Header != nil:
-		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Header{Header: *ch.Header}
-	case ch.Cookie != nil:
-		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie_{
-			Cookie: &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie{Name: ch.Cookie.Name},
-		}
-	case ch.SourceIP != nil:
-		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_SourceIp{SourceIp: *ch.SourceIP}
-	case ch.QueryParam != nil:
-		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_QueryParam{QueryParam: *ch.QueryParam}
-	case ch.Expression != nil:
-		expr := *castCELPtr(ch.Expression, func(expr agentgateway.CELExpression) {
-			errs = append(errs, fmt.Errorf("backend loadBalancing expression is not a valid CEL expression: %s", expr))
+	case lb.ConsistentHash != nil:
+		key := castCEL(lb.ConsistentHash.Key, func(expr agentgateway.CELExpression) {
+			errs = append(errs, fmt.Errorf("backend loadBalancing consistentHash key is not a valid CEL expression: %s", expr))
 		})
-		chProto.HashKey = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_Expression{Expression: expr}
+		lbProto.Algorithm = &api.BackendPolicySpec_LoadBalancing_ConsistentHash_{
+			ConsistentHash: &api.BackendPolicySpec_LoadBalancing_ConsistentHash{Key: key},
+		}
 	default:
-		errs = append(errs, fmt.Errorf("backend loadBalancing consistentHash requires a hash key"))
+		errs = append(errs, fmt.Errorf("backend loadBalancing requires an algorithm"))
 	}
 
 	p := &api.Policy{
@@ -392,9 +383,7 @@ func translateBackendLoadBalancing(policy *agentgateway.AgentgatewayPolicy) (*ap
 		Kind: &api.Policy_Backend{
 			Backend: &api.BackendPolicySpec{
 				Kind: &api.BackendPolicySpec_LoadBalancing_{
-					LoadBalancing: &api.BackendPolicySpec_LoadBalancing{
-						ConsistentHash: chProto,
-					},
+					LoadBalancing: lbProto,
 				},
 			},
 		},

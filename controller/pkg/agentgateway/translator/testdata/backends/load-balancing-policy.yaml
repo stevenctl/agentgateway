@@ -24,7 +24,7 @@ spec:
   backend:
     loadBalancing:
       consistentHash:
-        header: x-session-id
+        key: 'request.headers["x-session-id"]'
 ---
 # Output
 output:
@@ -36,7 +36,7 @@ output:
       backend:
         loadBalancing:
           consistentHash:
-            header: x-session-id
+            key: request.headers["x-session-id"]
       key: default/lb-policy:load-balancing:default/echo.default.svc.cluster.local
       name:
         kind: AgentgatewayPolicy

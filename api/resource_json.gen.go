@@ -1612,17 +1612,6 @@ func (this *BackendPolicySpec_LoadBalancing_ConsistentHash) UnmarshalJSON(b []by
 	return ResourceUnmarshaler.Unmarshal(bytes.NewReader(b), this)
 }
 
-// MarshalJSON is a custom marshaler for BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie
-func (this *BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie) MarshalJSON() ([]byte, error) {
-	str, err := ResourceMarshaler.MarshalToString(this)
-	return []byte(str), err
-}
-
-// UnmarshalJSON is a custom unmarshaler for BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie
-func (this *BackendPolicySpec_LoadBalancing_ConsistentHash_Cookie) UnmarshalJSON(b []byte) error {
-	return ResourceUnmarshaler.Unmarshal(bytes.NewReader(b), this)
-}
-
 // MarshalJSON is a custom marshaler for StaticBackend
 func (this *StaticBackend) MarshalJSON() ([]byte, error) {
 	str, err := ResourceMarshaler.MarshalToString(this)

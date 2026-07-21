@@ -2257,28 +2257,19 @@ fn convert_load_balancing(
 	lb: &proto::agent::backend_policy_spec::LoadBalancing,
 	diagnostics: &mut Diagnostics,
 ) -> Result<http::loadbalancing::Policy, ProtoError> {
-	use crate::http::loadbalancing::{ConsistentHash, CookieHash, HashOn, Policy};
-	use crate::types::proto::agent::backend_policy_spec::load_balancing::consistent_hash::HashKey;
-	let Some(ch) = &lb.consistent_hash else {
-		return Err(ProtoError::MissingRequiredField);
-	};
-	let hash_on = match &ch.hash_key {
-		Some(HashKey::Header(h)) => HashOn::Header(strng::new(h)),
-		Some(HashKey::Cookie(c)) => HashOn::Cookie(CookieHash {
-			name: strng::new(&c.name),
+	use crate::http::loadbalancing::{Algorithm, ConsistentHash, Policy};
+	use crate::types::proto::agent::backend_policy_spec::load_balancing::Algorithm as ProtoAlgorithm;
+	let algorithm = match &lb.algorithm {
+		Some(ProtoAlgorithm::ConsistentHash(ch)) => Algorithm::ConsistentHash(ConsistentHash {
+			key: permissive_cel_expression_arc(
+				diagnostics,
+				"backend.loadBalancing.consistentHash.key",
+				&ch.key,
+			),
 		}),
-		Some(HashKey::SourceIp(b)) => HashOn::SourceIp(*b),
-		Some(HashKey::QueryParam(q)) => HashOn::QueryParam(strng::new(q)),
-		Some(HashKey::Expression(e)) => HashOn::Expression(permissive_cel_expression_arc(
-			diagnostics,
-			"backend.loadBalancing.consistentHash.expression",
-			e,
-		)),
 		None => return Err(ProtoError::MissingRequiredField),
 	};
-	Ok(Policy {
-		consistent_hash: ConsistentHash { hash_on },
-	})
+	Ok(Policy { algorithm })
 }
 
 fn convert_health(
@@ -4852,50 +4843,34 @@ mod tests {
 	fn test_backend_policy_spec_to_load_balancing_policy() -> Result<(), ProtoError> {
 		use proto::agent::backend_policy_spec::load_balancing;
 
-		let spec = |hash_key| proto::agent::BackendPolicySpec {
+		let spec = |key: &str| proto::agent::BackendPolicySpec {
 			kind: Some(proto::agent::backend_policy_spec::Kind::LoadBalancing(
 				proto::agent::backend_policy_spec::LoadBalancing {
-					consistent_hash: Some(load_balancing::ConsistentHash {
-						hash_key: Some(hash_key),
-					}),
+					algorithm: Some(load_balancing::Algorithm::ConsistentHash(
+						load_balancing::ConsistentHash {
+							key: key.to_string(),
+						},
+					)),
 				},
 			)),
 		};
 
 		let policy = backend_policy_from_proto(
-			&spec(load_balancing::consistent_hash::HashKey::Header(
-				"x-session-id".to_string(),
-			)),
+			&spec("request.headers[\"x-user\"]"),
 			&mut Diagnostics::default(),
 		)?;
 		let BackendTrafficPolicy::LoadBalancing(lb) = policy else {
 			panic!("Expected LoadBalancing policy variant");
 		};
-		assert!(matches!(
-			&lb.consistent_hash.hash_on,
-			http::loadbalancing::HashOn::Header(h) if h == "x-session-id"
-		));
+		let http::loadbalancing::Algorithm::ConsistentHash(_) = &lb.algorithm;
+		// The key expression is registered so route-level CEL setup can see it.
+		use crate::store::HasExpressions;
+		assert_eq!(lb.expressions().count(), 1);
 
-		let policy = backend_policy_from_proto(
-			&spec(load_balancing::consistent_hash::HashKey::Expression(
-				"request.headers[\"x-user\"]".to_string(),
-			)),
-			&mut Diagnostics::default(),
-		)?;
-		let BackendTrafficPolicy::LoadBalancing(lb) = policy else {
-			panic!("Expected LoadBalancing policy variant");
-		};
-		assert!(matches!(
-			&lb.consistent_hash.hash_on,
-			http::loadbalancing::HashOn::Expression(_)
-		));
-
-		// Missing hash key is rejected.
+		// Missing algorithm is rejected.
 		let missing = proto::agent::BackendPolicySpec {
 			kind: Some(proto::agent::backend_policy_spec::Kind::LoadBalancing(
-				proto::agent::backend_policy_spec::LoadBalancing {
-					consistent_hash: Some(load_balancing::ConsistentHash { hash_key: None }),
-				},
+				proto::agent::backend_policy_spec::LoadBalancing { algorithm: None },
 			)),
 		};
 		assert!(backend_policy_from_proto(&missing, &mut Diagnostics::default()).is_err());

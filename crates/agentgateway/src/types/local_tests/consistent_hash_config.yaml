@@ -11,7 +11,7 @@ binds:
         policies:
           loadBalancing:
             consistentHash:
-              header: x-session-id
+              key: 'request.headers["x-session-id"]'
     - matches:
       - path:
           pathPrefix: /cookie
@@ -20,8 +20,7 @@ binds:
         policies:
           loadBalancing:
             consistentHash:
-              cookie:
-                name: sid
+              key: 'request.headers.cookie("sid")'
     - matches:
       - path:
           pathPrefix: /source-ip
@@ -30,7 +29,7 @@ binds:
         policies:
           loadBalancing:
             consistentHash:
-              sourceIp: true
+              key: source.address
     - matches:
       - path:
           pathPrefix: /expression
@@ -39,4 +38,4 @@ binds:
         policies:
           loadBalancing:
             consistentHash:
-              expression: 'request.headers["x-user"]'
+              key: 'request.headers["x-user"]'
