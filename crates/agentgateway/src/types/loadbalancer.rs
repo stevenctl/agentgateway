@@ -86,22 +86,22 @@ fn build_sampler<T>(active: &IndexMap<EndpointKey, EndpointWithInfo<T>>) -> Samp
 	Sampler::Weighted(dist)
 }
 
-/// Consistent-hash ring over a group's active endpoints. Only built for services that a
+/// Consistent-hash ring over a group's configured endpoints. Only built for services that a
 /// loadBalancing.consistentHash policy actually routes to (see `RingState`).
 #[derive(Debug, Clone, Default)]
 pub enum RingState {
 	/// No hashed request has targeted this group; membership changes skip ring builds.
 	#[default]
 	Inactive,
-	/// Ring is maintained eagerly: rebuilt on every active-set membership change.
+	/// Ring is maintained: rebuilt when endpoints are added or removed (not on eviction).
 	Built(Arc<HashRing>),
 }
 
 #[derive(Debug)]
 pub struct HashRing {
-	/// (ring point, index into the group's `active` IndexMap), sorted by point.
-	/// Indices are only valid against the exact group snapshot the ring was built from.
-	entries: Vec<(u64, u32)>,
+	/// (ring point, owning endpoint key), sorted by point. Keys resolve against any group
+	/// snapshot, so the ring is independent of eviction state and IndexMap ordering.
+	entries: Vec<(u64, EndpointKey)>,
 }
 
 /// Ring points per unit of endpoint capacity (nginx's ketama allocation: weight * 160).
@@ -109,36 +109,51 @@ pub struct HashRing {
 /// membership changes never reallocate the surviving endpoints' points, so a change remaps
 /// only the keys owned by the endpoints that actually changed.
 const POINTS_PER_WEIGHT: u64 = 160;
+/// Floor on total ring size (matching Envoy's default minimum). Below it, per-endpoint points
+/// scale up proportionally so small clusters still spread keys evenly (a 2-endpoint service
+/// would otherwise get only 320 points, skewing each endpoint's share by well over 10%).
+const MIN_RING_SIZE: u64 = 1024;
 /// Cap on total ring size. Beyond it, per-endpoint points scale down proportionally
 /// (weights quantize, and stability across the boundary degrades slightly).
 const MAX_RING_SIZE: u64 = 65536;
 
-/// Builds a ketama-style ring: each entry hashes `{endpoint_key}_{i}` with xxhash64,
-/// sorted by point for binary-search lookup.
-fn build_ring<T>(active: &IndexMap<EndpointKey, EndpointWithInfo<T>>) -> Arc<HashRing> {
-	let weighted: Vec<(usize, u64)> = active
-		.values()
-		.enumerate()
+/// Builds a ketama-style ring over the configured endpoint set (active + rejected): each entry
+/// hashes `{endpoint_key}_{i}` with xxhash64, sorted by point for binary-search lookup.
+///
+/// Evicted endpoints keep their points (they live in `rejected`), so a health blip never
+/// reshuffles the keyspace and the ring is identical across instances that disagree on health;
+/// currently-unviable owners are skipped at selection time (see `walk` and `select_hash`).
+fn build_ring<T>(
+	active: &IndexMap<EndpointKey, EndpointWithInfo<T>>,
+	rejected: &IndexMap<EndpointKey, EndpointWithInfo<T>>,
+) -> Arc<HashRing> {
+	let weighted: Vec<(&EndpointKey, u64)> = active
+		.iter()
+		.chain(rejected.iter())
 		.filter(|(_, e)| e.capacity > 0)
-		.map(|(i, e)| (i, e.capacity as u64))
+		.map(|(k, e)| (k, e.capacity as u64))
 		.collect();
 	let total_points: u64 = weighted.iter().map(|(_, w)| w * POINTS_PER_WEIGHT).sum();
 	if total_points == 0 {
 		return Arc::new(HashRing { entries: vec![] });
 	}
+	// Scale the whole ring into [MIN, MAX]; scaling every endpoint by the same factor preserves
+	// weight proportions.
 	let scale = if total_points > MAX_RING_SIZE {
 		MAX_RING_SIZE as f64 / total_points as f64
+	} else if total_points < MIN_RING_SIZE {
+		MIN_RING_SIZE as f64 / total_points as f64
 	} else {
 		1.0
 	};
 
-	let mut entries = Vec::with_capacity(total_points.min(MAX_RING_SIZE) as usize);
-	for (idx, weight) in weighted {
-		let (key, _) = active.get_index(idx).expect("index from enumerate");
+	let mut entries =
+		Vec::with_capacity((total_points as f64 * scale).ceil() as usize + weighted.len());
+	for (key, weight) in weighted {
 		let points = (((weight * POINTS_PER_WEIGHT) as f64 * scale).round() as u64).max(1);
 		for i in 0..points {
 			let point = crate::http::loadbalancing::hash(format!("{key}_{i}").as_bytes());
-			entries.push((point, idx as u32));
+			entries.push((point, key.clone()));
 		}
 	}
 	entries.sort_unstable();
@@ -150,20 +165,20 @@ impl HashRing {
 		self.entries.is_empty()
 	}
 
-	/// Iterates active-map indices starting at the ring position owning `hash` (the first
+	/// Iterates owning endpoint keys starting at the ring position owning `hash` (the first
 	/// point at or after it, wrapping), skipping repeats — the ketama "walk to the next
 	/// host" order used when the owning endpoint is not viable.
-	pub fn walk(&self, hash: u64) -> impl Iterator<Item = u32> + '_ {
+	pub fn walk(&self, hash: u64) -> impl Iterator<Item = &EndpointKey> + '_ {
 		let start = self.entries.partition_point(|(p, _)| *p < hash);
 		let len = self.entries.len();
-		let mut seen: Vec<u32> = Vec::new();
+		let mut seen: Vec<&EndpointKey> = Vec::new();
 		(0..len).filter_map(move |off| {
-			let (_, idx) = self.entries[(start + off) % len];
-			if seen.contains(&idx) {
+			let (_, key) = &self.entries[(start + off) % len];
+			if seen.contains(&key) {
 				return None;
 			}
-			seen.push(idx);
-			Some(idx)
+			seen.push(key);
+			Some(key)
 		})
 	}
 }
@@ -198,12 +213,14 @@ impl<T> EndpointGroup<T> {
 		let cap = ep.capacity;
 		self.active.insert(key, ep);
 		self.update_sampler(Some(cap));
+		self.rebuild_ring();
 	}
 
 	/// Remove an endpoint from both pools.
 	fn remove(&mut self, key: &EndpointKey) {
 		if self.active.swap_remove(key).is_some() || self.rejected.swap_remove(key).is_some() {
 			self.update_sampler(None);
+			self.rebuild_ring();
 		}
 	}
 
@@ -246,10 +263,15 @@ impl<T> EndpointGroup<T> {
 		if !preserved {
 			self.sampler = build_sampler(&self.active);
 		}
-		// Unlike the sampler, any active-set change invalidates the ring (points depend on
-		// membership, and cached indices depend on IndexMap positions after swap_remove).
+	}
+
+	/// Rebuilds the ring from the configured endpoint set. Called only when endpoints are
+	/// added or removed — eviction merely moves an endpoint between the active and rejected
+	/// pools, which the ring spans, so it stays valid across evict/unevict without a rebuild.
+	/// No-op until a hashed request has activated the ring (see `select_hash`).
+	fn rebuild_ring(&mut self) {
 		if let RingState::Built(_) = self.ring {
-			self.ring = RingState::Built(build_ring(&self.active));
+			self.ring = RingState::Built(build_ring(&self.active, &self.rejected));
 		}
 	}
 }
@@ -398,35 +420,18 @@ impl EndpointSet<Endpoint> {
 		hash: u64,
 	) -> Option<Candidate> {
 		let slot = self.buckets.iter().find(|x| !x.load().active.is_empty())?;
-		let mut group = slot.load_full();
-		let ring = match &group.ring {
+		let ring = match &slot.load().ring {
 			RingState::Built(r) => r.clone(),
-			RingState::Inactive => {
-				// First hashed request for this group: activate the ring under the writer
-				// mutex so subsequent membership changes keep it fresh (see update_sampler).
-				let _mu = self.action_mutex.lock();
-				let mut g = Arc::unwrap_or_clone(slot.load_full());
-				let r = match &g.ring {
-					RingState::Built(r) => r.clone(),
-					RingState::Inactive => {
-						let r = build_ring(&g.active);
-						g.ring = RingState::Built(r.clone());
-						r
-					},
-				};
-				// Keep the exact snapshot the ring was built from: walk indices below must
-				// resolve against it, not a concurrently-updated group.
-				let g = Arc::new(g);
-				slot.store(g.clone());
-				group = g;
-				r
-			},
+			RingState::Inactive => self.activate_ring(slot),
 		};
 		if ring.is_empty() {
 			return None;
 		}
-		for idx in ring.walk(hash) {
-			let Some((_, ewi)) = group.active.get_index(idx as usize) else {
+		// Keys resolve against any snapshot, so an up-to-date `active` is all we need — a key
+		// absent here (evicted, drained, or removed since the ring was built) is skipped.
+		let group = slot.load();
+		for key in ring.walk(hash) {
+			let Some(ewi) = group.active.get(key) else {
 				continue;
 			};
 			if ewi.capacity == 0 {
@@ -442,6 +447,21 @@ impl EndpointSet<Endpoint> {
 			});
 		}
 		None
+	}
+
+	/// First hashed request for a group: build and store its ring under the writer mutex so
+	/// later add/remove keep it maintained (see `rebuild_ring`). Idempotent under contention —
+	/// a concurrent activation that already built the ring wins and is reused as-is.
+	fn activate_ring(&self, slot: &Atomic<EndpointGroup<Endpoint>>) -> Arc<HashRing> {
+		let _mu = self.action_mutex.lock();
+		let mut g = Arc::unwrap_or_clone(slot.load_full());
+		if let RingState::Built(r) = &g.ring {
+			return r.clone();
+		}
+		let r = build_ring(&g.active, &g.rejected);
+		g.ring = RingState::Built(r.clone());
+		slot.store(Arc::new(g));
+		r
 	}
 
 	/// Slow fallback when P2C finds nothing viable: scan buckets in locality order
@@ -1887,38 +1907,57 @@ mod tests {
 
 	// --- HashRing ---
 
-	fn ring_owner(ring: &HashRing, hash: u64) -> u32 {
+	fn empty_rejected() -> IndexMap<EndpointKey, EndpointWithInfo<()>> {
+		IndexMap::new()
+	}
+
+	fn ring_owner(ring: &HashRing, hash: u64) -> &EndpointKey {
 		ring.walk(hash).next().expect("non-empty ring")
+	}
+
+	fn ep_key(i: usize) -> EndpointKey {
+		format!("ep{i}").into()
 	}
 
 	#[test]
 	fn ring_deterministic() {
 		let active = make_active(&[1, 1, 1]);
-		let a = build_ring(&active);
-		let b = build_ring(&active);
+		let a = build_ring(&active, &empty_rejected());
+		let b = build_ring(&active, &empty_rejected());
 		assert_eq!(a.entries, b.entries);
 		assert!(!a.is_empty());
 	}
 
 	#[test]
 	fn ring_empty_when_all_drained() {
-		assert!(build_ring(&make_active(&[0, 0])).is_empty());
-		assert!(build_ring(&make_active(&[])).is_empty());
+		assert!(build_ring(&make_active(&[0, 0]), &empty_rejected()).is_empty());
+		assert!(build_ring(&make_active(&[]), &empty_rejected()).is_empty());
 	}
 
 	#[test]
 	fn ring_excludes_zero_capacity_endpoints() {
 		let active = make_active(&[0, 1, 1]);
-		let ring = build_ring(&active);
-		assert!(ring.entries.iter().all(|(_, idx)| *idx != 0));
+		let ring = build_ring(&active, &empty_rejected());
+		assert!(ring.entries.iter().all(|(_, k)| *k != ep_key(0)));
+	}
+
+	#[test]
+	fn ring_covers_rejected_endpoints() {
+		// Evicted endpoints live in `rejected` but keep their ring points, so their keyspace
+		// slice snaps back to them on recovery instead of being permanently remapped.
+		let active = make_active(&[1, 1]);
+		let mut rejected = IndexMap::new();
+		rejected.insert(ep_key(2), EndpointWithInfo::with_capacity((), 1));
+		let ring = build_ring(&active, &rejected);
+		assert!(ring.entries.iter().any(|(_, k)| *k == ep_key(2)));
 	}
 
 	#[test]
 	fn ring_weight_proportional_entries() {
 		let active = make_active(&[3, 1]);
-		let ring = build_ring(&active);
-		let ep0 = ring.entries.iter().filter(|(_, i)| *i == 0).count() as f64;
-		let ep1 = ring.entries.iter().filter(|(_, i)| *i == 1).count() as f64;
+		let ring = build_ring(&active, &empty_rejected());
+		let ep0 = ring.entries.iter().filter(|(_, k)| *k == ep_key(0)).count() as f64;
+		let ep1 = ring.entries.iter().filter(|(_, k)| *k == ep_key(1)).count() as f64;
 		let ratio = ep0 / (ep0 + ep1);
 		assert!(
 			(ratio - 0.75).abs() < 0.01,
@@ -1927,18 +1966,34 @@ mod tests {
 	}
 
 	#[test]
+	fn ring_honors_min_size() {
+		// Two unit-weight endpoints (320 base points) scale up past the floor.
+		let ring = build_ring(&make_active(&[1, 1]), &empty_rejected());
+		assert!(
+			ring.entries.len() as u64 >= MIN_RING_SIZE,
+			"ring size {} below floor {MIN_RING_SIZE}",
+			ring.entries.len()
+		);
+	}
+
+	#[test]
 	fn ring_balanced_key_distribution() {
 		let active = make_active(&[1; 4]);
-		let ring = build_ring(&active);
+		let ring = build_ring(&active, &empty_rejected());
 		let mut counts = [0u32; 4];
 		let n = 10_000u32;
 		for i in 0..n {
 			let h = crate::http::loadbalancing::hash(format!("key{i}").as_bytes());
-			counts[ring_owner(&ring, h) as usize] += 1;
+			let idx: usize = ring_owner(&ring, h)
+				.strip_prefix("ep")
+				.unwrap()
+				.parse()
+				.unwrap();
+			counts[idx] += 1;
 		}
 		for (i, c) in counts.iter().enumerate() {
 			let share = *c as f64 / n as f64;
-			// ~25% each; ketama variance with 160 points per endpoint is around ±10%.
+			// ~25% each; ketama variance at the enforced minimum ring size is well under ±10%.
 			assert!(
 				(share - 0.25).abs() < 0.10,
 				"endpoint {i} share = {share} (counts={counts:?})"
@@ -1949,19 +2004,20 @@ mod tests {
 	#[test]
 	fn ring_minimal_remap_on_endpoint_removal() {
 		let before = make_active(&[1; 10]);
-		let ring_before = build_ring(&before);
+		let ring_before = build_ring(&before, &empty_rejected());
 
-		// Remove the last endpoint; earlier indices are unchanged, so owners are comparable.
+		// Remove the last endpoint; keys resolve by identity, so owners are directly comparable.
 		let after = make_active(&[1; 9]);
-		let ring_after = build_ring(&after);
+		let ring_after = build_ring(&after, &empty_rejected());
 
+		let removed = ep_key(9);
 		let n = 10_000u32;
 		let mut moved = 0u32;
 		for i in 0..n {
 			let h = crate::http::loadbalancing::hash(format!("key{i}").as_bytes());
 			let owner_before = ring_owner(&ring_before, h);
 			let owner_after = ring_owner(&ring_after, h);
-			if owner_before != 9 {
+			if *owner_before != removed {
 				// Keys not owned by the removed endpoint must not move.
 				assert_eq!(
 					owner_before, owner_after,
@@ -1979,8 +2035,8 @@ mod tests {
 	#[test]
 	fn ring_walk_yields_distinct_endpoints() {
 		let active = make_active(&[1; 5]);
-		let ring = build_ring(&active);
-		let seen: Vec<u32> = ring.walk(12345).collect();
+		let ring = build_ring(&active, &empty_rejected());
+		let seen: Vec<EndpointKey> = ring.walk(12345).cloned().collect();
 		assert_eq!(seen.len(), 5);
 		let mut sorted = seen.clone();
 		sorted.sort_unstable();
@@ -1993,25 +2049,56 @@ mod tests {
 	}
 
 	#[test]
-	fn ring_rebuilds_on_membership_change_when_built() {
+	fn ring_rebuilds_on_add_and_remove_when_built() {
 		let mut group = EndpointGroup::<()>::default();
 		group.add("a".into(), EndpointWithInfo::with_capacity((), 1));
 		// Inactive by default: membership changes don't build a ring.
 		assert!(matches!(group.ring, RingState::Inactive));
 
-		group.ring = RingState::Built(build_ring(&group.active));
+		group.ring = RingState::Built(build_ring(&group.active, &group.rejected));
 		group.add("b".into(), EndpointWithInfo::with_capacity((), 1));
 		let RingState::Built(ring) = &group.ring else {
 			panic!("ring must stay built");
 		};
-		// The rebuilt ring covers both endpoints.
-		assert!(ring.entries.iter().any(|(_, i)| *i == 1));
+		// The rebuilt ring covers the added endpoint.
+		assert!(ring.entries.iter().any(|(_, k)| *k == "b"));
 
-		group.evict("b".into());
+		group.remove(&"b".into());
 		let RingState::Built(ring) = &group.ring else {
 			panic!("ring must stay built");
 		};
-		assert!(ring.entries.iter().all(|(_, i)| *i == 0));
+		assert!(ring.entries.iter().all(|(_, k)| *k != "b"));
+	}
+
+	#[test]
+	fn ring_unchanged_across_eviction() {
+		// Eviction moves an endpoint between pools without touching the configured set, so the
+		// ring — and thus the whole keyspace mapping — must stay byte-for-byte identical.
+		let mut group = EndpointGroup::<()>::default();
+		group.add("a".into(), EndpointWithInfo::with_capacity((), 1));
+		group.add("b".into(), EndpointWithInfo::with_capacity((), 1));
+		group.ring = RingState::Built(build_ring(&group.active, &group.rejected));
+		let RingState::Built(before) = group.ring.clone() else {
+			panic!("built");
+		};
+
+		group.evict("b".into());
+		let RingState::Built(after) = &group.ring else {
+			panic!("ring must stay built");
+		};
+		assert_eq!(
+			before.entries, after.entries,
+			"eviction must not rebuild the ring"
+		);
+
+		group.unevict("b".into(), |_| true);
+		let RingState::Built(after) = &group.ring else {
+			panic!("ring must stay built");
+		};
+		assert_eq!(
+			before.entries, after.entries,
+			"uneviction must not rebuild the ring"
+		);
 	}
 
 	#[test]
