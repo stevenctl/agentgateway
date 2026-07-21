@@ -32,6 +32,7 @@ This directory contains examples of how to use agentgateway. Each example is nam
 * [traffic-oidc](traffic-oidc/README.md): use the built-in `oidc` browser auth flow with a local Keycloak issuer.
 * [traffic-oauth2-proxy](traffic-oauth2-proxy/README.md): integrate with an external `oauth2-proxy` deployment.
 * [fault-injection](fault-injection/README.md): inject synthetic latency and aborts into a subset of traffic for fault-injection testing.
+* [traffic-session-affinity](traffic-session-affinity/README.md): pin sessions to a backend endpoint with consistent-hash load balancing, minting the session cookie via a `transformations` policy.
 * [traffic-ratelimiting-local](traffic-ratelimiting-local/README.md): apply local rate limiting to HTTP traffic.
 * [traffic-ratelimiting-global](traffic-ratelimiting-global/README.md): apply global rate limiting with Envoy's ratelimit service.
 * [traffic-tailscale-auth](traffic-tailscale-auth/README.md): authenticate HTTP requests with Tailscale identity headers.

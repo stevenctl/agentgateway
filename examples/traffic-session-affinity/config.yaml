@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+
+# A single Service ("echo") backed by three endpoints on 127.0.0.1:8081-8083.
+# Consistent hashing pins each session to one of them; the transformation policy
+# below mints the session cookie so there is something stable to hash on.
+services:
+- name: echo
+  namespace: default
+  hostname: echo
+  vips: []
+  ports:
+    8080: 8080
+
+workloads:
+- uid: echo-1
+  name: echo-1
+  namespace: default
+  workloadIps: [127.0.0.1]
+  services:
+    default/echo:
+      8080: 8081
+- uid: echo-2
+  name: echo-2
+  namespace: default
+  workloadIps: [127.0.0.1]
+  services:
+    default/echo:
+      8080: 8082
+- uid: echo-3
+  name: echo-3
+  namespace: default
+  workloadIps: [127.0.0.1]
+  services:
+    default/echo:
+      8080: 8083
+
+binds:
+- port: 3000
+  listeners:
+  - name: default
+    protocol: HTTP
+    routes:
+    - name: session-affinity
+      backends:
+      - service:
+          name: default/echo
+          port: 8080
+        policies:
+          # Route every request carrying the same `sid` cookie to the same endpoint.
+          # Requests without the cookie (or where it is empty) are not hashed and fall
+          # back to the default power-of-two-choices load balancer.
+          loadBalancing:
+            consistentHash:
+              key: request.headers.cookie("sid")
+          # Hand-rolled affinity-cookie generation: on the first response (client has
+          # no `sid`), mint a random one so the browser echoes it back and pins the
+          # session from then on. When the cookie is already present the expression
+          # evaluates to null, so no Set-Cookie is emitted.
+          #
+          # NOTE: this is a demonstration of what CEL can express today. A future
+          # Gateway API sessionPersistence policy will provide managed cookie/TTL
+          # semantics without hand-rolled CEL.
+          transformations:
+            response:
+              add:
+                set-cookie: >-
+                  ("cookie" in request.headers && request.headers["cookie"].contains("sid="))
+                  ? null
+                  : "sid=" + string(random()) + "; Path=/; HttpOnly"
