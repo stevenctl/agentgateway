@@ -381,6 +381,7 @@ pub struct RoutePolicies {
 	pub request_mirror: RequestPolicy<Vec<filters::RequestMirror>>,
 	pub cors: RequestPolicy<http::cors::Cors>,
 	pub buffer: RequestPolicy<http::buffer::Buffer>,
+	pub response_cache: RequestPolicy<http::responsecache::ResponseCache>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -443,6 +444,7 @@ impl RoutePolicies {
 			&self.request_redirect as &dyn PolicyExpressions,
 			&self.url_rewrite as &dyn PolicyExpressions,
 			&self.cors as &dyn PolicyExpressions,
+			&self.response_cache as &dyn PolicyExpressions,
 		]
 		.into_iter()
 	}
@@ -1067,6 +1069,11 @@ impl Store {
 				},
 				TrafficPolicy::Buffer(p) => {
 					pol.buffer.set_if_unset(p);
+				},
+				TrafficPolicy::ResponseCache(p) => {
+					pol
+						.response_cache
+						.merge_with_inheritance(p, lock_inheritance);
 				},
 			}
 		}

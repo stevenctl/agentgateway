@@ -2682,6 +2682,7 @@ pub enum TrafficPolicy {
 	RequestMirror(Vec<filters::RequestMirror>),
 	DirectResponse(RequestPolicy<filters::DirectResponse>),
 	Buffer(RequestPolicy<http::buffer::Buffer>),
+	ResponseCache(RequestPolicy<http::responsecache::ResponseCache>),
 	#[serde(rename = "cors")]
 	CORS(RequestPolicy<http::cors::Cors>),
 }

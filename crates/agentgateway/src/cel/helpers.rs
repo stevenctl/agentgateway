@@ -7,21 +7,39 @@ use serde::Deserialize;
 
 use super::Expression;
 
-/// Serde `deserialize_with` helper for duration-or-CEL fields: accepts an ergonomic duration literal
-/// (e.g. `2s`) by wrapping it as a CEL `duration(...)` call, otherwise parses the value as a CEL
-/// expression.
+/// Compiles a duration-or-CEL field: an ergonomic duration literal (e.g. `2s`) is wrapped as a CEL
+/// `duration(...)` call, otherwise the value is compiled as a CEL expression. Shared by the serde
+/// helpers below and by non-serde callers (e.g. XDS translation).
+pub fn compile_duration_or_expression(raw: &str) -> anyhow::Result<Arc<Expression>> {
+	let expression = if agent_core::durfmt::parse(raw).is_ok() {
+		format!("duration({raw:?})")
+	} else {
+		raw.to_string()
+	};
+	Ok(Arc::new(Expression::new_strict(&expression)?))
+}
+
+/// Serde `deserialize_with` helper for duration-or-CEL fields. See [`compile_duration_or_expression`].
 pub fn de_duration_or_expression<'de, D>(deserializer: D) -> Result<Arc<Expression>, D::Error>
 where
 	D: serde::Deserializer<'de>,
 {
 	let raw = String::deserialize(deserializer)?;
-	let expression = if agent_core::durfmt::parse(&raw).is_ok() {
-		format!("duration({raw:?})")
-	} else {
-		raw
+	compile_duration_or_expression(&raw).map_err(serde::de::Error::custom)
+}
+
+/// Serde `deserialize_with` helper for optional duration-or-CEL fields.
+pub fn de_opt_duration_or_expression<'de, D>(
+	deserializer: D,
+) -> Result<Option<Arc<Expression>>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let Some(raw) = Option::<String>::deserialize(deserializer)? else {
+		return Ok(None);
 	};
-	Expression::new_strict(&expression)
-		.map(Arc::new)
+	compile_duration_or_expression(&raw)
+		.map(Some)
 		.map_err(serde::de::Error::custom)
 }
 

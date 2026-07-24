@@ -104,9 +104,11 @@ prost-types.workspace = true
 prost-wkt-types.workspace = true
 prost.workspace = true
 rand.workspace = true
+postcard.workspace = true
 quick_cache.workspace = true
 libc.workspace = true
 rcgen.workspace = true
+redis.workspace = true
 regex.workspace = true
 
 rmcp = { version = "2.0", features = [

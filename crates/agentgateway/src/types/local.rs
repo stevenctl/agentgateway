@@ -2695,6 +2695,9 @@ pub struct FilterOrPolicy {
 	/// Buffer request and response bodies.
 	#[serde(default)]
 	buffer: Option<http::buffer::Buffer>,
+	/// Cache upstream responses according to their Cache-Control headers.
+	#[serde(default)]
+	response_cache: Option<http::responsecache::ResponseCache>,
 	/// Set request timeout limits.
 	#[serde(default)]
 	timeout: Option<timeout::Policy>,
@@ -4956,6 +4959,7 @@ pub(crate) async fn split_policies_for_target(
 		ext_authz,
 		ext_proc,
 		buffer,
+		response_cache,
 		timeout,
 		retry,
 		delay,
@@ -5135,6 +5139,12 @@ pub(crate) async fn split_policies_for_target(
 	// Traffic policies
 	if let Some(p) = buffer {
 		route_policies.push(TrafficPolicy::Buffer(RequestPolicy::single(p)));
+	}
+	if let Some(p) = response_cache {
+		// The store is not part of the config, so it must be sized after deserialization.
+		route_policies.push(TrafficPolicy::ResponseCache(RequestPolicy::single(
+			p.with_configured_store()?,
+		)));
 	}
 	if let Some(p) = timeout {
 		route_policies.push(TrafficPolicy::Timeout(p));

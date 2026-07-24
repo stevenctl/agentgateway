@@ -211,6 +211,20 @@ async fn apply_request_policies(
 		.apply_selected("remote rate limit", c, l, req, rp.headers())
 		.await?;
 
+	// Response caching runs after auth and rate limiting, so a cache hit cannot be used to bypass
+	// them. The key is built from the client-visible request, before any rewrite.
+	if let Some(cache) = pol.response_cache.select("response cache", req) {
+		match cache.lookup(req).await {
+			http::responsecache::Lookup::Hit(resp) => {
+				return Err(ProxyResponse::DirectResponse(Box::new(resp)));
+			},
+			http::responsecache::Lookup::Miss(pending) => {
+				rp.response_cache = Some((cache, pending));
+			},
+			http::responsecache::Lookup::Bypass => {},
+		}
+	}
+
 	rp.buffer = pol.buffer.apply("buffer", c, l, req, rp.headers()).await?;
 
 	// ExtProc uses RequestPolicy for conditional selection and CEL registration only.
@@ -3854,6 +3868,11 @@ struct ResponsePolicies {
 	backend_transformation: ResponsePolicy<Transformation>,
 	gateway_transformation: ResponsePolicy<Transformation>,
 	response_headers: HeaderMap,
+	// Set on a cache miss, carrying the key chosen on the request side.
+	response_cache: Option<(
+		Arc<http::responsecache::ResponseCache>,
+		http::responsecache::PendingStore,
+	)>,
 	ext_proc: Option<ExtProcRequest>,
 	gateway_ext_proc: Option<ExtProcRequest>,
 	// Populated by the standard request-policy flow after conditional rate-limit policies are
@@ -3885,6 +3904,29 @@ impl ResponsePolicies {
 		l: &mut RequestLog,
 		is_upstream_response: bool,
 	) -> Result<(), ProxyResponse> {
+		// Store before the response-side policies run: they are re-applied to every cache hit, so
+		// caching their output would apply them twice.
+		if is_upstream_response && let Some((cache, pending)) = self.response_cache.as_ref() {
+			if cache
+				.store_response(pending, resp, l.request_snapshot.as_deref())
+				.await
+			{
+				dtrace::pol_result!(
+					"response cache",
+					dtrace::Info,
+					Apply,
+					"stored response in cache"
+				);
+			} else {
+				dtrace::pol_result!(
+					"response cache",
+					dtrace::Info,
+					Skip,
+					"response is not cacheable"
+				);
+			}
+		}
+
 		let rh = &mut self.response_headers;
 
 		self

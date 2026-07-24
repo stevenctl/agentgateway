@@ -951,6 +951,13 @@ type Traffic struct {
 	// fault-injection testing.
 	// +optional
 	Delay *Delay `json:"delay,omitempty"`
+
+	// Caches upstream responses according to their Cache-Control headers (RFC 9111).
+	// Cached responses are served without contacting the upstream. Only GET/HEAD responses
+	// that declare their own freshness (or a configured ttl) are cached. Vary is honored
+	// automatically.
+	// +optional
+	ResponseCache *ResponseCache `json:"responseCache,omitempty"`
 }
 
 // Direct response policy.
@@ -3094,6 +3101,61 @@ type Delay struct {
 	// The injected delay counts against the request timeout.
 	// +required
 	Duration CELExpression `json:"duration"`
+}
+
+// ResponseCache caches upstream responses based on their Cache-Control headers (RFC 9111).
+type ResponseCache struct {
+	// Where cached responses are kept. Defaults to an in-memory store local to each gateway instance.
+	// +optional
+	Store *ResponseCacheStore `json:"store,omitempty"`
+
+	// Largest response body to cache. Larger responses stream through uncached.
+	// +optional
+	MaxBodyBytes *ByteSize `json:"maxBodyBytes,omitempty"`
+
+	// Freshness applied when a response declares none (no max-age/s-maxage/Expires). Either a
+	// duration such as "30s", or a CEL expression evaluated against the response that returns a
+	// duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent
+	// result leaves such responses uncached. Responses that declare their own freshness always
+	// honor it; this only fills the gap. Vary is honored automatically and needs no configuration.
+	// +optional
+	TTL *string `json:"ttl,omitempty"`
+}
+
+// ResponseCacheStore selects where cached responses are kept. Exactly one field may be set.
+//
+// +kubebuilder:validation:MaxProperties=1
+type ResponseCacheStore struct {
+	// Keep entries in this gateway instance's memory. Entries are not shared between replicas.
+	// +optional
+	InMemory *InMemoryStore `json:"inMemory,omitempty"`
+
+	// Keep entries in Redis, shared across every gateway instance pointed at the same server.
+	// +optional
+	Redis *RedisStore `json:"redis,omitempty"`
+}
+
+// InMemoryStore is a process-local cache store.
+type InMemoryStore struct {
+	// Maximum number of responses to keep. Least-recently-used entries are evicted.
+	// +optional
+	MaxEntries *uint64 `json:"maxEntries,omitempty"`
+}
+
+// RedisStore is a shared cache store backed by Redis.
+type RedisStore struct {
+	// Connection URL, e.g. redis://host:6379/0 or rediss://host:6379 for TLS.
+	// +required
+	URL string `json:"url"`
+
+	// Prefix prepended to every key, to namespace this cache within a shared Redis.
+	// +optional
+	KeyPrefix *string `json:"keyPrefix,omitempty"`
+
+	// Timeout applied to each Redis operation. On timeout the request falls through to the origin.
+	// +kubebuilder:validation:XValidation:rule="matches(self, '^([0-9]{1,5}(h|m|s|ms)){1,4}$')",message="invalid duration value"
+	// +optional
+	OperationTimeout *metav1.Duration `json:"operationTimeout,omitempty"`
 }
 
 // Retry policy.

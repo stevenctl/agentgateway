@@ -2833,6 +2833,40 @@ fn traffic_policy_from_proto(
 				response: to_body(buffer.response),
 			}))
 		},
+		Some(tps::Kind::ResponseCache(rc)) => {
+			use proto::agent::traffic_policy_spec::response_cache as rcp;
+			let store = match &rc.store {
+				Some(rcp::Store::Redis(r)) => {
+					http::responsecache::StoreConfig::Redis(http::responsecache::RedisConfig {
+						url: r.url.clone(),
+						key_prefix: r.key_prefix.clone(),
+						operation_timeout: r.operation_timeout.map(convert_duration),
+					})
+				},
+				Some(rcp::Store::InMemory(m)) => {
+					http::responsecache::StoreConfig::InMemory(http::responsecache::InMemoryConfig {
+						max_entries: m
+							.max_entries
+							.map(|v| v as usize)
+							.unwrap_or(http::responsecache::DEFAULT_MAX_ENTRIES),
+					})
+				},
+				None => http::responsecache::StoreConfig::default(),
+			};
+			let ttl = rc
+				.ttl
+				.as_deref()
+				.map(crate::cel::compile_duration_or_expression)
+				.transpose()
+				.map_err(|e| ProtoError::Generic(format!("invalid response cache ttl: {e}")))?;
+			let cache = http::responsecache::ResponseCache::from_parts(
+				store,
+				rc.max_body_bytes.map(|v| v as usize),
+				ttl,
+			)
+			.map_err(|e| ProtoError::Generic(format!("invalid response cache: {e}")))?;
+			TrafficPolicy::ResponseCache(RequestPolicy::single(cache))
+		},
 		None => return Err(ProtoError::MissingRequiredField),
 	})
 }
@@ -3647,6 +3681,7 @@ fn traffic_policy_kind_name(policy: &TrafficPolicy) -> &'static str {
 		TrafficPolicy::RequestMirror(_) => "requestMirror",
 		TrafficPolicy::DirectResponse(_) => "directResponse",
 		TrafficPolicy::Buffer(_) => "buffer",
+		TrafficPolicy::ResponseCache(_) => "responseCache",
 		TrafficPolicy::CORS(_) => "cors",
 	}
 }

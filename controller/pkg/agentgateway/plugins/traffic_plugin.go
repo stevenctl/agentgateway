@@ -60,6 +60,7 @@ const (
 	apiKeyPolicySuffix             = ":apikeyauth" //nolint:gosec
 	directResponseSuffix           = ":direct-response"
 	bufferSuffix                   = ":buffer"
+	responseCacheSuffix            = ":response-cache"
 )
 
 var logger = logging.New("agentgateway/plugins")
@@ -578,6 +579,10 @@ func translateTrafficPolicyToAgw(
 		appendPolicy("buffer")(processBufferPolicy(traffic.Buffer, basePolicyName, policyName))
 	}
 
+	if traffic.ResponseCache != nil {
+		appendPolicy("responseCache")(processResponseCachePolicy(traffic.ResponseCache, basePolicyName, policyName))
+	}
+
 	if traffic.JWTAuthentication != nil {
 		appendPolicy("jwtAuthentication")(processJWTAuthenticationPolicy(ctx, traffic.JWTAuthentication, traffic.Phase, basePolicyName, policyName))
 	}
@@ -635,6 +640,57 @@ func processBufferPolicy(buffer *agentgateway.Buffer, basePolicyName string, pol
 		"agentgateway_policy", bufferPolicy.Name)
 
 	return bufferPolicy, errors.Join(errs...)
+}
+
+func translateResponseCacheStore(store *agentgateway.ResponseCacheStore) *api.TrafficPolicySpec_ResponseCache {
+	rc := &api.TrafficPolicySpec_ResponseCache{}
+	if store == nil {
+		return rc
+	}
+	switch {
+	case store.Redis != nil:
+		redis := &api.TrafficPolicySpec_ResponseCache_Redis{
+			Url:       store.Redis.URL,
+			KeyPrefix: store.Redis.KeyPrefix,
+		}
+		if t := store.Redis.OperationTimeout; t != nil {
+			redis.OperationTimeout = durationpb.New(t.Duration)
+		}
+		rc.Store = &api.TrafficPolicySpec_ResponseCache_Redis_{Redis: redis}
+	case store.InMemory != nil:
+		rc.Store = &api.TrafficPolicySpec_ResponseCache_InMemory_{
+			InMemory: &api.TrafficPolicySpec_ResponseCache_InMemory{
+				MaxEntries: store.InMemory.MaxEntries,
+			},
+		}
+	}
+	return rc
+}
+
+func processResponseCachePolicy(cache *agentgateway.ResponseCache, basePolicyName string, policyName types.NamespacedName) (*api.Policy, error) {
+	translated := translateResponseCacheStore(cache.Store)
+	if v := quantityUint32(cache.MaxBodyBytes); v != nil {
+		translated.MaxBodyBytes = ptr.Of(uint64(*v))
+	}
+	translated.Ttl = cache.TTL
+
+	cachePolicy := &api.Policy{
+		Key:  basePolicyName + responseCacheSuffix,
+		Name: TypedResourceFromName(wellknown.AgentgatewayPolicyGVK.Kind, policyName),
+		Kind: &api.Policy_Traffic{
+			Traffic: &api.TrafficPolicySpec{
+				Kind: &api.TrafficPolicySpec_ResponseCache_{
+					ResponseCache: translated,
+				},
+			},
+		},
+	}
+
+	logger.Debug("generated ResponseCache policy",
+		"policy", basePolicyName,
+		"agentgateway_policy", cachePolicy.Name)
+
+	return cachePolicy, nil
 }
 
 func translatePolicyInheritance(strategy *agentgateway.PolicyStrategy) api.Policy_Inheritance {

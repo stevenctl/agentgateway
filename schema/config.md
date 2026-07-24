@@ -4313,6 +4313,16 @@
 |`binds[].listeners[].routes[].policies.buffer.response`|object|Buffer upstream response bodies before sending them to the client.|
 |`binds[].listeners[].routes[].policies.buffer.response.maxBytes`|integer|Maximum body size to buffer in bytes.|
 |`binds[].listeners[].routes[].policies.buffer.response.failureMode`|enum|Behavior when the body exceeds maxBytes: failClosed (reject) or failOpen (continue).<br>Possible values: `failClosed`, `failOpen`.|
+|`binds[].listeners[].routes[].policies.responseCache`|object|Cache upstream responses according to their Cache-Control headers.|
+|`binds[].listeners[].routes[].policies.responseCache.store`|object|Where cached responses are kept.<br>Exactly one of inMemory or redis may be set.|
+|`binds[].listeners[].routes[].policies.responseCache.store.inMemory`|object|Keep entries in this gateway instance's memory. Entries are not shared between replicas, so<br>each instance warms its own cache.|
+|`binds[].listeners[].routes[].policies.responseCache.store.inMemory.maxEntries`|integer|Maximum number of resources to keep. Least-recently-used entries are evicted.|
+|`binds[].listeners[].routes[].policies.responseCache.store.redis`|object|Keep entries in Redis, shared across every gateway instance pointed at the same server.|
+|`binds[].listeners[].routes[].policies.responseCache.store.redis.url`|string|Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.|
+|`binds[].listeners[].routes[].policies.responseCache.store.redis.keyPrefix`|string|Prefix prepended to every key, to namespace this cache within a shared Redis.|
+|`binds[].listeners[].routes[].policies.responseCache.store.redis.operationTimeout`|string|Timeout applied to each Redis operation. On timeout the request falls through to the origin.|
+|`binds[].listeners[].routes[].policies.responseCache.maxBodyBytes`|integer|Largest response body to cache, in bytes. Larger responses stream through uncached.|
+|`binds[].listeners[].routes[].policies.responseCache.ttl`|string|Freshness applied when a response declares none (no `max-age`/`s-maxage`/`Expires`). Either a<br>duration such as `30s`, or a CEL expression evaluated against the response that returns a<br>duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent<br>result leaves the response uncached. Responses that declare their own freshness always honor<br>it; this only fills the gap.|
 |`binds[].listeners[].routes[].policies.timeout`|object|Set request timeout limits.|
 |`binds[].listeners[].routes[].policies.timeout.requestTimeout`|string|Maximum time allowed for the full downstream request and response.|
 |`binds[].listeners[].routes[].policies.timeout.backendRequestTimeout`|string|Maximum time allowed for the upstream backend request.|
@@ -19112,6 +19122,16 @@
 |`policies[].policy.buffer.response`|object|Buffer upstream response bodies before sending them to the client.|
 |`policies[].policy.buffer.response.maxBytes`|integer|Maximum body size to buffer in bytes.|
 |`policies[].policy.buffer.response.failureMode`|enum|Behavior when the body exceeds maxBytes: failClosed (reject) or failOpen (continue).<br>Possible values: `failClosed`, `failOpen`.|
+|`policies[].policy.responseCache`|object|Cache upstream responses according to their Cache-Control headers.|
+|`policies[].policy.responseCache.store`|object|Where cached responses are kept.<br>Exactly one of inMemory or redis may be set.|
+|`policies[].policy.responseCache.store.inMemory`|object|Keep entries in this gateway instance's memory. Entries are not shared between replicas, so<br>each instance warms its own cache.|
+|`policies[].policy.responseCache.store.inMemory.maxEntries`|integer|Maximum number of resources to keep. Least-recently-used entries are evicted.|
+|`policies[].policy.responseCache.store.redis`|object|Keep entries in Redis, shared across every gateway instance pointed at the same server.|
+|`policies[].policy.responseCache.store.redis.url`|string|Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.|
+|`policies[].policy.responseCache.store.redis.keyPrefix`|string|Prefix prepended to every key, to namespace this cache within a shared Redis.|
+|`policies[].policy.responseCache.store.redis.operationTimeout`|string|Timeout applied to each Redis operation. On timeout the request falls through to the origin.|
+|`policies[].policy.responseCache.maxBodyBytes`|integer|Largest response body to cache, in bytes. Larger responses stream through uncached.|
+|`policies[].policy.responseCache.ttl`|string|Freshness applied when a response declares none (no `max-age`/`s-maxage`/`Expires`). Either a<br>duration such as `30s`, or a CEL expression evaluated against the response that returns a<br>duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent<br>result leaves the response uncached. Responses that declare their own freshness always honor<br>it; this only fills the gap.|
 |`policies[].policy.timeout`|object|Set request timeout limits.|
 |`policies[].policy.timeout.requestTimeout`|string|Maximum time allowed for the full downstream request and response.|
 |`policies[].policy.timeout.backendRequestTimeout`|string|Maximum time allowed for the upstream backend request.|
@@ -31880,6 +31900,16 @@
 |`routeGroups[].routes[].policies.buffer.response`|object|Buffer upstream response bodies before sending them to the client.|
 |`routeGroups[].routes[].policies.buffer.response.maxBytes`|integer|Maximum body size to buffer in bytes.|
 |`routeGroups[].routes[].policies.buffer.response.failureMode`|enum|Behavior when the body exceeds maxBytes: failClosed (reject) or failOpen (continue).<br>Possible values: `failClosed`, `failOpen`.|
+|`routeGroups[].routes[].policies.responseCache`|object|Cache upstream responses according to their Cache-Control headers.|
+|`routeGroups[].routes[].policies.responseCache.store`|object|Where cached responses are kept.<br>Exactly one of inMemory or redis may be set.|
+|`routeGroups[].routes[].policies.responseCache.store.inMemory`|object|Keep entries in this gateway instance's memory. Entries are not shared between replicas, so<br>each instance warms its own cache.|
+|`routeGroups[].routes[].policies.responseCache.store.inMemory.maxEntries`|integer|Maximum number of resources to keep. Least-recently-used entries are evicted.|
+|`routeGroups[].routes[].policies.responseCache.store.redis`|object|Keep entries in Redis, shared across every gateway instance pointed at the same server.|
+|`routeGroups[].routes[].policies.responseCache.store.redis.url`|string|Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.|
+|`routeGroups[].routes[].policies.responseCache.store.redis.keyPrefix`|string|Prefix prepended to every key, to namespace this cache within a shared Redis.|
+|`routeGroups[].routes[].policies.responseCache.store.redis.operationTimeout`|string|Timeout applied to each Redis operation. On timeout the request falls through to the origin.|
+|`routeGroups[].routes[].policies.responseCache.maxBodyBytes`|integer|Largest response body to cache, in bytes. Larger responses stream through uncached.|
+|`routeGroups[].routes[].policies.responseCache.ttl`|string|Freshness applied when a response declares none (no `max-age`/`s-maxage`/`Expires`). Either a<br>duration such as `30s`, or a CEL expression evaluated against the response that returns a<br>duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent<br>result leaves the response uncached. Responses that declare their own freshness always honor<br>it; this only fills the gap.|
 |`routeGroups[].routes[].policies.timeout`|object|Set request timeout limits.|
 |`routeGroups[].routes[].policies.timeout.requestTimeout`|string|Maximum time allowed for the full downstream request and response.|
 |`routeGroups[].routes[].policies.timeout.backendRequestTimeout`|string|Maximum time allowed for the upstream backend request.|
@@ -47015,6 +47045,16 @@
 |`routes[].policies.buffer.response`|object|Buffer upstream response bodies before sending them to the client.|
 |`routes[].policies.buffer.response.maxBytes`|integer|Maximum body size to buffer in bytes.|
 |`routes[].policies.buffer.response.failureMode`|enum|Behavior when the body exceeds maxBytes: failClosed (reject) or failOpen (continue).<br>Possible values: `failClosed`, `failOpen`.|
+|`routes[].policies.responseCache`|object|Cache upstream responses according to their Cache-Control headers.|
+|`routes[].policies.responseCache.store`|object|Where cached responses are kept.<br>Exactly one of inMemory or redis may be set.|
+|`routes[].policies.responseCache.store.inMemory`|object|Keep entries in this gateway instance's memory. Entries are not shared between replicas, so<br>each instance warms its own cache.|
+|`routes[].policies.responseCache.store.inMemory.maxEntries`|integer|Maximum number of resources to keep. Least-recently-used entries are evicted.|
+|`routes[].policies.responseCache.store.redis`|object|Keep entries in Redis, shared across every gateway instance pointed at the same server.|
+|`routes[].policies.responseCache.store.redis.url`|string|Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.|
+|`routes[].policies.responseCache.store.redis.keyPrefix`|string|Prefix prepended to every key, to namespace this cache within a shared Redis.|
+|`routes[].policies.responseCache.store.redis.operationTimeout`|string|Timeout applied to each Redis operation. On timeout the request falls through to the origin.|
+|`routes[].policies.responseCache.maxBodyBytes`|integer|Largest response body to cache, in bytes. Larger responses stream through uncached.|
+|`routes[].policies.responseCache.ttl`|string|Freshness applied when a response declares none (no `max-age`/`s-maxage`/`Expires`). Either a<br>duration such as `30s`, or a CEL expression evaluated against the response that returns a<br>duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent<br>result leaves the response uncached. Responses that declare their own freshness always honor<br>it; this only fills the gap.|
 |`routes[].policies.timeout`|object|Set request timeout limits.|
 |`routes[].policies.timeout.requestTimeout`|string|Maximum time allowed for the full downstream request and response.|
 |`routes[].policies.timeout.backendRequestTimeout`|string|Maximum time allowed for the upstream backend request.|
@@ -65922,6 +65962,16 @@
 |`mcp.policies.buffer.response`|object|Buffer upstream response bodies before sending them to the client.|
 |`mcp.policies.buffer.response.maxBytes`|integer|Maximum body size to buffer in bytes.|
 |`mcp.policies.buffer.response.failureMode`|enum|Behavior when the body exceeds maxBytes: failClosed (reject) or failOpen (continue).<br>Possible values: `failClosed`, `failOpen`.|
+|`mcp.policies.responseCache`|object|Cache upstream responses according to their Cache-Control headers.|
+|`mcp.policies.responseCache.store`|object|Where cached responses are kept.<br>Exactly one of inMemory or redis may be set.|
+|`mcp.policies.responseCache.store.inMemory`|object|Keep entries in this gateway instance's memory. Entries are not shared between replicas, so<br>each instance warms its own cache.|
+|`mcp.policies.responseCache.store.inMemory.maxEntries`|integer|Maximum number of resources to keep. Least-recently-used entries are evicted.|
+|`mcp.policies.responseCache.store.redis`|object|Keep entries in Redis, shared across every gateway instance pointed at the same server.|
+|`mcp.policies.responseCache.store.redis.url`|string|Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.|
+|`mcp.policies.responseCache.store.redis.keyPrefix`|string|Prefix prepended to every key, to namespace this cache within a shared Redis.|
+|`mcp.policies.responseCache.store.redis.operationTimeout`|string|Timeout applied to each Redis operation. On timeout the request falls through to the origin.|
+|`mcp.policies.responseCache.maxBodyBytes`|integer|Largest response body to cache, in bytes. Larger responses stream through uncached.|
+|`mcp.policies.responseCache.ttl`|string|Freshness applied when a response declares none (no `max-age`/`s-maxage`/`Expires`). Either a<br>duration such as `30s`, or a CEL expression evaluated against the response that returns a<br>duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent<br>result leaves the response uncached. Responses that declare their own freshness always honor<br>it; this only fills the gap.|
 |`mcp.policies.timeout`|object|Set request timeout limits.|
 |`mcp.policies.timeout.requestTimeout`|string|Maximum time allowed for the full downstream request and response.|
 |`mcp.policies.timeout.backendRequestTimeout`|string|Maximum time allowed for the upstream backend request.|

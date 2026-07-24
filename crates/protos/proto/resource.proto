@@ -1165,6 +1165,28 @@ message TrafficPolicySpec {
     optional BufferBody response = 2;
   }
 
+  message ResponseCache {
+    // Process-local store, not shared between gateway instances.
+    message InMemory {
+      optional uint64 max_entries = 1;
+    }
+    // Shared store backed by Redis.
+    message Redis {
+      string url = 1;
+      optional string key_prefix = 2;
+      google.protobuf.Duration operation_timeout = 3;
+    }
+    oneof store {
+      InMemory in_memory = 1;
+      Redis redis = 2;
+    }
+    optional uint64 max_body_bytes = 3;
+    // Freshness applied when a response declares none. A duration such as "30s", or a CEL
+    // expression evaluated against the response returning a duration. Empty leaves such responses
+    // uncached. Vary is honored automatically and needs no configuration.
+    optional string ttl = 4;
+  }
+
   oneof kind {
     Timeout timeout = 2;
     Retry retry = 3;
@@ -1188,6 +1210,7 @@ message TrafficPolicySpec {
     HostRewrite host_rewrite = 21;
     Buffer buffer = 22;
     Delay delay = 23;
+    ResponseCache response_cache = 24;
   }
 }
 

@@ -1897,6 +1897,18 @@
           ],
           "default": null
         },
+        "responseCache": {
+          "description": "Cache upstream responses according to their Cache-Control headers.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseCache"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "timeout": {
           "description": "Set request timeout limits.",
           "anyOf": [
@@ -7106,6 +7118,107 @@
       "enum": [
         "failClosed",
         "failOpen"
+      ]
+    },
+    "ResponseCache": {
+      "type": "object",
+      "properties": {
+        "store": {
+          "description": "Where cached responses are kept.",
+          "$ref": "#/$defs/StoreConfig",
+          "default": {
+            "inMemory": {
+              "maxEntries": 0
+            }
+          }
+        },
+        "maxBodyBytes": {
+          "description": "Largest response body to cache, in bytes. Larger responses stream through uncached.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1048576
+        },
+        "ttl": {
+          "description": "Freshness applied when a response declares none (no `max-age`/`s-maxage`/`Expires`). Either a\nduration such as `30s`, or a CEL expression evaluated against the response that returns a\nduration, e.g. `response.code == 200 ? duration(\"5m\") : duration(\"0s\")`. A zero or absent\nresult leaves the response uncached. Responses that declare their own freshness always honor\nit; this only fills the gap.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "StoreConfig": {
+      "description": "Backing store for cache entries.",
+      "oneOf": [
+        {
+          "description": "Keep entries in this gateway instance's memory. Entries are not shared between replicas, so\neach instance warms its own cache.",
+          "type": "object",
+          "properties": {
+            "inMemory": {
+              "$ref": "#/$defs/InMemoryConfig"
+            }
+          },
+          "required": [
+            "inMemory"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "description": "Keep entries in Redis, shared across every gateway instance pointed at the same server.",
+          "type": "object",
+          "properties": {
+            "redis": {
+              "$ref": "#/$defs/RedisConfig"
+            }
+          },
+          "required": [
+            "redis"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "InMemoryConfig": {
+      "type": "object",
+      "properties": {
+        "maxEntries": {
+          "description": "Maximum number of resources to keep. Least-recently-used entries are evicted.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1024
+        }
+      },
+      "additionalProperties": false
+    },
+    "RedisConfig": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.",
+          "type": "string"
+        },
+        "keyPrefix": {
+          "description": "Prefix prepended to every key, to namespace this cache within a shared Redis.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operationTimeout": {
+          "description": "Timeout applied to each Redis operation. On timeout the request falls through to the origin.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url"
       ]
     },
     "TimeoutPolicy": {

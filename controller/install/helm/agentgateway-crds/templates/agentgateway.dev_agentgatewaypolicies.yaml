@@ -9220,6 +9220,74 @@ spec:
                     - message: conditional cannot be set with any other field
                       rule: 'has(self.conditional) ? [has(self.global),has(self.local)].filter(x,x==true).size()
                         == 0 : true'
+                  responseCache:
+                    description: |-
+                      Caches upstream responses according to their Cache-Control headers (RFC 9111).
+                      Cached responses are served without contacting the upstream. Only GET/HEAD responses
+                      that declare their own freshness (or a configured ttl) are cached. Vary is honored
+                      automatically.
+                    properties:
+                      maxBodyBytes:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: Largest response body to cache. Larger responses
+                          stream through uncached.
+                        maxLength: 32
+                        minLength: 1
+                        pattern: ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)(([KMGTPE]i)|[numkMGTPE]|[eE](\+?0*([0-9]|1[0-8])|-0*[0-9]))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: value must be at least 1 byte and fit within uint32
+                          rule: (self >= 1 && self <= 4294967295) || self.size() >
+                            0
+                      store:
+                        description: Where cached responses are kept. Defaults to
+                          an in-memory store local to each gateway instance.
+                        maxProperties: 1
+                        properties:
+                          inMemory:
+                            description: Keep entries in this gateway instance's memory.
+                              Entries are not shared between replicas.
+                            properties:
+                              maxEntries:
+                                description: Maximum number of responses to keep.
+                                  Least-recently-used entries are evicted.
+                                format: int64
+                                type: integer
+                            type: object
+                          redis:
+                            description: Keep entries in Redis, shared across every
+                              gateway instance pointed at the same server.
+                            properties:
+                              keyPrefix:
+                                description: Prefix prepended to every key, to namespace
+                                  this cache within a shared Redis.
+                                type: string
+                              operationTimeout:
+                                description: Timeout applied to each Redis operation.
+                                  On timeout the request falls through to the origin.
+                                type: string
+                                x-kubernetes-validations:
+                                - message: invalid duration value
+                                  rule: matches(self, '^([0-9]{1,5}(h|m|s|ms)){1,4}$')
+                              url:
+                                description: Connection URL, e.g. redis://host:6379/0
+                                  or rediss://host:6379 for TLS.
+                                type: string
+                            required:
+                            - url
+                            type: object
+                        type: object
+                      ttl:
+                        description: |-
+                          Freshness applied when a response declares none (no max-age/s-maxage/Expires). Either a
+                          duration such as "30s", or a CEL expression evaluated against the response that returns a
+                          duration, e.g. `response.code == 200 ? duration("5m") : duration("0s")`. A zero or absent
+                          result leaves such responses uncached. Responses that declare their own freshness always
+                          honor it; this only fills the gap. Vary is honored automatically and needs no configuration.
+                        type: string
+                    type: object
                   retry:
                     description: Retry policy.
                     properties:
@@ -9833,7 +9901,7 @@ spec:
                 - message: phase PreRouting only supports extAuth, authorization,
                     transformation, extProc, jwtAuthentication, basicAuthentication,
                     apiKeyAuthentication and cors
-                  rule: 'has(self.phase) && self.phase == ''PreRouting'' ? [has(self.buffer),has(self.csrf),has(self.delay),has(self.directResponse),has(self.headerModifiers),has(self.hostRewrite),has(self.rateLimit),has(self.retry),has(self.timeouts)].filter(x,x==true).size()
+                  rule: 'has(self.phase) && self.phase == ''PreRouting'' ? [has(self.buffer),has(self.csrf),has(self.delay),has(self.directResponse),has(self.headerModifiers),has(self.hostRewrite),has(self.rateLimit),has(self.responseCache),has(self.retry),has(self.timeouts)].filter(x,x==true).size()
                     == 0 : true'
             type: object
             x-kubernetes-validations:

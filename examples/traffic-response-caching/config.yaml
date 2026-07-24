@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+binds:
+- port: 3000
+  listeners:
+  - protocol: HTTP
+    routes:
+    - name: cached
+      policies:
+        # Cache upstream responses according to their Cache-Control headers (RFC 9111).
+        # An empty `{}` caches GET/HEAD responses that declare their own freshness, in this
+        # gateway instance's memory. Vary is honored automatically — no configuration needed.
+        responseCache:
+          # Freshness for responses that declare none. A duration, or a CEL expression evaluated
+          # against the response returning a duration (e.g. cache 200s but never 5xx). Omit to
+          # cache only responses that carry their own Cache-Control.
+          ttl: 'response.code == 200 ? duration("10s") : duration("0s")'
+
+          # To share the cache across gateway replicas, swap the in-memory store for Redis:
+          # store:
+          #   redis:
+          #     url: redis://localhost:6379/0
+          #     keyPrefix: "agw:"
+          #     operationTimeout: 500ms
+      backends:
+      - host: 127.0.0.1:8080
