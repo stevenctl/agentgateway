@@ -19,23 +19,12 @@ const MIN_RING_SIZE: u64 = 1024;
 const MAX_RING_SIZE: u64 = 65536;
 
 /// Consistent-hash ring over a group's configured endpoints. Only built for services that a
-/// loadBalancing.consistentHash policy actually routes to (see `RingState`).
+/// loadBalancing.consistentHash policy actually routes to.
 #[derive(Debug)]
 pub struct HashRing {
 	/// (ring point, owning endpoint key), sorted by point. Keys resolve against any group
 	/// snapshot, so the ring is independent of eviction state and IndexMap ordering.
 	entries: Vec<(u64, EndpointKey)>,
-}
-
-/// Tracks whether a group's ring is being maintained. Rings are built lazily so that services no
-/// hash policy routes to never pay for one.
-#[derive(Debug, Clone, Default)]
-pub enum RingState {
-	/// No hashed request has targeted this group; membership changes skip ring builds.
-	#[default]
-	Inactive,
-	/// Ring is maintained: rebuilt when endpoints are added or removed (not on eviction).
-	Built(Arc<HashRing>),
 }
 
 /// Builds a ketama-style ring from `(endpoint key, weight)` pairs: each entry hashes
@@ -58,8 +47,7 @@ pub fn build<'a>(weighted: impl Iterator<Item = (&'a EndpointKey, u64)>) -> Arc<
 		1.0
 	};
 
-	let mut entries =
-		Vec::with_capacity((total_points as f64 * scale).ceil() as usize + weighted.len());
+	let mut entries = Vec::with_capacity(total_points.clamp(MIN_RING_SIZE, MAX_RING_SIZE) as usize);
 	for (key, weight) in weighted {
 		let points = (((weight * POINTS_PER_WEIGHT) as f64 * scale).round() as u64).max(1);
 		for i in 0..points {

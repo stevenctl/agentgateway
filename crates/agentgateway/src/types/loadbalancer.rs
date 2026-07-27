@@ -16,7 +16,7 @@ use tokio::time::sleep_until;
 use crate::types::discovery::{
 	Endpoint, LoadBalancer, LoadBalancerMode, LoadBalancerScopes, Service, Workload,
 };
-use crate::types::ringhash::{self, HashRing, RingState};
+use crate::types::ringhash::{self, HashRing};
 use crate::*;
 
 pub(crate) type EndpointKey = Strng;
@@ -94,7 +94,9 @@ pub struct EndpointGroup<T> {
 	#[serde(skip)]
 	sampler: Sampler,
 	#[serde(skip)]
-	ring: RingState,
+	/// None until a hashed request activates it (`select_hash`); once built, kept up to date on
+	/// endpoint add/remove.
+	ring: Option<Arc<HashRing>>,
 }
 
 impl<T> EndpointGroup<T> {
@@ -107,7 +109,7 @@ impl<T> EndpointGroup<T> {
 			active,
 			rejected,
 			sampler,
-			ring: RingState::Inactive,
+			ring: None,
 		}
 	}
 
@@ -186,8 +188,8 @@ impl<T> EndpointGroup<T> {
 	/// already spans, so evict/unevict need no rebuild. No-op until a hashed request has
 	/// activated the ring (see `select_hash`).
 	fn rebuild_ring(&mut self) {
-		if let RingState::Built(_) = self.ring {
-			self.ring = RingState::Built(self.build_ring());
+		if self.ring.is_some() {
+			self.ring = Some(self.build_ring());
 		}
 	}
 }
@@ -198,7 +200,7 @@ impl<T> Default for EndpointGroup<T> {
 			active: IndexMap::new(),
 			rejected: IndexMap::new(),
 			sampler: Sampler::default(),
-			ring: RingState::Inactive,
+			ring: None,
 		}
 	}
 }
@@ -353,20 +355,20 @@ impl EndpointSet<Endpoint> {
 		target_port: u16,
 		hash: u64,
 	) -> Option<Candidate> {
+		let group = slot.load();
 		// An empty bucket has nothing to select from; don't activate a ring for it.
-		if slot.load().active.is_empty() {
+		if group.active.is_empty() {
 			return None;
 		}
-		let ring = match &slot.load().ring {
-			RingState::Built(r) => r.clone(),
-			RingState::Inactive => self.activate_ring(slot),
+		let ring = match &group.ring {
+			Some(r) => r.clone(),
+			None => self.activate_ring(slot),
 		};
 		if ring.is_empty() {
 			return None;
 		}
-		// Keys resolve against any snapshot, so an up-to-date `active` is all we need — a key
-		// absent here (evicted, drained, or removed since the ring was built) is skipped.
-		let group = slot.load();
+		// Keys resolve against any snapshot — one absent from `active` (evicted, drained, or
+		// removed since the ring was built) is simply skipped.
 		for key in ring.walk(hash) {
 			let Some(ewi) = group.active.get(key) else {
 				continue;
@@ -392,11 +394,11 @@ impl EndpointSet<Endpoint> {
 	fn activate_ring(&self, slot: &Atomic<EndpointGroup<Endpoint>>) -> Arc<HashRing> {
 		let _mu = self.action_mutex.lock();
 		let mut g = Arc::unwrap_or_clone(slot.load_full());
-		if let RingState::Built(r) = &g.ring {
+		if let Some(r) = &g.ring {
 			return r.clone();
 		}
 		let r = g.build_ring();
-		g.ring = RingState::Built(r.clone());
+		g.ring = Some(r.clone());
 		slot.store(Arc::new(g));
 		r
 	}
@@ -1877,19 +1879,15 @@ mod tests {
 		let mut group = EndpointGroup::<()>::default();
 		group.add("a".into(), EndpointWithInfo::with_capacity((), 1));
 		// Services that no hash policy routes to never pay to build a ring.
-		assert!(matches!(group.ring, RingState::Inactive));
+		assert!(group.ring.is_none());
 
-		group.ring = RingState::Built(group.build_ring());
+		group.ring = Some(group.build_ring());
 		group.add("b".into(), EndpointWithInfo::with_capacity((), 1));
-		let RingState::Built(ring) = &group.ring else {
-			panic!("ring must stay built");
-		};
+		let ring = group.ring.as_ref().expect("ring must stay built");
 		assert!(ring.entries().iter().any(|(_, k)| *k == "b"));
 
 		group.remove(&"b".into());
-		let RingState::Built(ring) = &group.ring else {
-			panic!("ring must stay built");
-		};
+		let ring = group.ring.as_ref().expect("ring must stay built");
 		assert!(ring.entries().iter().all(|(_, k)| *k != "b"));
 	}
 
@@ -1900,15 +1898,11 @@ mod tests {
 		let mut group = EndpointGroup::<()>::default();
 		group.add("a".into(), EndpointWithInfo::with_capacity((), 1));
 		group.add("b".into(), EndpointWithInfo::with_capacity((), 1));
-		group.ring = RingState::Built(group.build_ring());
-		let RingState::Built(before) = group.ring.clone() else {
-			panic!("built");
-		};
+		group.ring = Some(group.build_ring());
+		let before = group.ring.clone().unwrap();
 
 		group.evict("b".into());
-		let RingState::Built(after) = &group.ring else {
-			panic!("ring must stay built");
-		};
+		let after = group.ring.as_ref().expect("ring must stay built");
 		assert_eq!(
 			before.entries(),
 			after.entries(),
@@ -1916,9 +1910,7 @@ mod tests {
 		);
 
 		group.unevict("b".into(), |_| true);
-		let RingState::Built(after) = &group.ring else {
-			panic!("ring must stay built");
-		};
+		let after = group.ring.as_ref().expect("ring must stay built");
 		assert_eq!(
 			before.entries(),
 			after.entries(),
