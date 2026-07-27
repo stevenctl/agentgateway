@@ -214,12 +214,14 @@ async fn apply_request_policies(
 	// Response caching runs after auth and rate limiting, so a cache hit cannot be used to bypass
 	// them. The key is built from the client-visible request, before any rewrite.
 	if let Some(cache) = pol.response_cache.select("response cache", req) {
-		match cache.lookup(req).await {
+		match cache.lookup(c, req).await {
 			http::responsecache::Lookup::Hit(resp) => {
 				return Err(ProxyResponse::DirectResponse(Box::new(resp)));
 			},
 			http::responsecache::Lookup::Miss(pending) => {
-				rp.response_cache = Some((cache, pending));
+				// The client is carried to the response side, which has no other handle on it and
+				// needs one to reach a remote store.
+				rp.response_cache = Some((cache, pending, c.clone()));
 			},
 			http::responsecache::Lookup::Bypass => {},
 		}
@@ -3872,6 +3874,7 @@ struct ResponsePolicies {
 	response_cache: Option<(
 		Arc<http::responsecache::ResponseCache>,
 		http::responsecache::PendingStore,
+		PolicyClient,
 	)>,
 	ext_proc: Option<ExtProcRequest>,
 	gateway_ext_proc: Option<ExtProcRequest>,
@@ -3906,9 +3909,9 @@ impl ResponsePolicies {
 	) -> Result<(), ProxyResponse> {
 		// Store before the response-side policies run: they are re-applied to every cache hit, so
 		// caching their output would apply them twice.
-		if is_upstream_response && let Some((cache, pending)) = self.response_cache.as_ref() {
+		if is_upstream_response && let Some((cache, pending, client)) = self.response_cache.as_ref() {
 			if cache
-				.store_response(pending, resp, l.request_snapshot.as_deref())
+				.store_response(client, pending, resp, l.request_snapshot.as_deref())
 				.await
 			{
 				dtrace::pol_result!(

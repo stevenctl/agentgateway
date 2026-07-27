@@ -14,9 +14,21 @@ spec:
       maxBodyBytes: 1Mi
       store:
         redis:
-          url: redis://redis:6379/0
+          backendRef:
+            name: redis
+            port: 6379
+          db: 1
           keyPrefix: "agw:"
           operationTimeout: 500ms
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: default
+spec:
+  ports:
+    - port: 6379
 
 ---
 # Output
@@ -40,9 +52,14 @@ output:
         responseCache:
           maxBodyBytes: "1048576"
           redis:
+            backend:
+              port: 6379
+              service:
+                hostname: redis.default.svc.cluster.local
+                namespace: default
+            db: "1"
             keyPrefix: 'agw:'
             operationTimeout: 0.500s
-            url: redis://redis:6379/0
           ttl: 'response.code == 200 ? duration("5m") : duration("0s")'
 status:
 - apiVersion: agentgateway.dev/v1alpha1

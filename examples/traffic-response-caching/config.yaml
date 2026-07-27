@@ -15,11 +15,17 @@ binds:
           # cache only responses that carry their own Cache-Control.
           ttl: 'response.code == 200 ? duration("10s") : duration("0s")'
 
-          # To share the cache across gateway replicas, swap the in-memory store for Redis:
+          # To share the cache across gateway replicas, swap the in-memory store for Redis.
+          # The server is named like any other backend, so backend policies (TLS, tunnels)
+          # apply to the connection:
           # store:
           #   redis:
-          #     url: redis://localhost:6379/0
+          #     host: localhost:6379
+          #     db: 0
           #     keyPrefix: "agw:"
           #     operationTimeout: 500ms
+          #     # policies:
+          #     #   backendTLS:
+          #     #     root: /etc/certs/redis-ca.pem
       backends:
       - host: 127.0.0.1:8080

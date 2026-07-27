@@ -9260,6 +9260,62 @@ spec:
                             description: Keep entries in Redis, shared across every
                               gateway instance pointed at the same server.
                             properties:
+                              backendRef:
+                                description: |-
+                                  Redis server to connect to. Policies attached to the referenced Backend, such as TLS or a
+                                  tunnel, apply to the connection.
+
+                                  Supported types: `Service` and `Backend`.
+                                properties:
+                                  group:
+                                    default: ""
+                                    description: Group of the referent, for example
+                                      `gateway.networking.k8s.io`. Empty selects the
+                                      core API group
+                                    maxLength: 253
+                                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                  kind:
+                                    default: Service
+                                    description: Kubernetes resource kind of the referent,
+                                      for example `Service`. Defaults to `Service`
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                    type: string
+                                  name:
+                                    description: Name is the name of the referent.
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    description: Namespace of the referent. Defaults
+                                      to the local namespace. A cross-namespace reference
+                                      requires a ReferenceGrant in the referent namespace
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                    type: string
+                                  port:
+                                    description: Destination port number. Required
+                                      when the referent is a Kubernetes `Service`
+                                    format: int32
+                                    maximum: 65535
+                                    minimum: 1
+                                    type: integer
+                                required:
+                                - name
+                                type: object
+                                x-kubernetes-validations:
+                                - message: Must have port for Service reference
+                                  rule: '(size(self.group) == 0 && self.kind == ''Service'')
+                                    ? has(self.port) : true'
+                              db:
+                                description: Database index selected after connecting.
+                                  Defaults to 0.
+                                format: int64
+                                minimum: 0
+                                type: integer
                               keyPrefix:
                                 description: Prefix prepended to every key, to namespace
                                   this cache within a shared Redis.
@@ -9271,12 +9327,15 @@ spec:
                                 x-kubernetes-validations:
                                 - message: invalid duration value
                                   rule: matches(self, '^([0-9]{1,5}(h|m|s|ms)){1,4}$')
-                              url:
-                                description: Connection URL, e.g. redis://host:6379/0
-                                  or rediss://host:6379 for TLS.
+                              password:
+                                description: Password sent with AUTH.
+                                type: string
+                              username:
+                                description: Username sent with AUTH, for servers
+                                  using ACLs.
                                 type: string
                             required:
-                            - url
+                            - backendRef
                             type: object
                         type: object
                       ttl:

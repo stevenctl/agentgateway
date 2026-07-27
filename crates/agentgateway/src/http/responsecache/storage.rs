@@ -14,17 +14,25 @@ use std::time::SystemTime;
 use quick_cache::sync::Cache;
 
 use super::{CacheEntry, CacheKey};
+use crate::proxy::httpproxy::PolicyClient;
 
 /// Where cached responses are kept. Kept object-safe so the backing store can be swapped without
 /// touching the policy.
+///
+/// `client` is what a remote store connects through; process-local stores ignore it.
 #[async_trait::async_trait]
 pub trait CacheStorage: std::fmt::Debug + Send + Sync {
 	/// Returns the entry for `key`, or `Ok(None)` if the store holds none. May return an entry with
 	/// stale variants; the caller checks freshness. `Err` means the store itself is unavailable.
-	async fn get(&self, key: &CacheKey) -> anyhow::Result<Option<CacheEntry>>;
+	async fn get(&self, client: &PolicyClient, key: &CacheKey) -> anyhow::Result<Option<CacheEntry>>;
 
 	/// Stores `value` under `key`, replacing any existing entry.
-	async fn insert(&self, key: &CacheKey, value: CacheEntry) -> anyhow::Result<()>;
+	async fn insert(
+		&self,
+		client: &PolicyClient,
+		key: &CacheKey,
+		value: CacheEntry,
+	) -> anyhow::Result<()>;
 }
 
 /// Process-local store. Entries are not shared between gateway instances, so each replica warms its
@@ -44,7 +52,11 @@ impl InMemoryStorage {
 
 #[async_trait::async_trait]
 impl CacheStorage for InMemoryStorage {
-	async fn get(&self, key: &CacheKey) -> anyhow::Result<Option<CacheEntry>> {
+	async fn get(
+		&self,
+		_client: &PolicyClient,
+		key: &CacheKey,
+	) -> anyhow::Result<Option<CacheEntry>> {
 		let Some(entry) = self.entries.get(key) else {
 			return Ok(None);
 		};
@@ -56,7 +68,12 @@ impl CacheStorage for InMemoryStorage {
 		Ok(Some(entry))
 	}
 
-	async fn insert(&self, key: &CacheKey, value: CacheEntry) -> anyhow::Result<()> {
+	async fn insert(
+		&self,
+		_client: &PolicyClient,
+		key: &CacheKey,
+		value: CacheEntry,
+	) -> anyhow::Result<()> {
 		self.entries.insert(key.clone(), value);
 		Ok(())
 	}

@@ -2838,7 +2838,14 @@ fn traffic_policy_from_proto(
 			let store = match &rc.store {
 				Some(rcp::Store::Redis(r)) => {
 					http::responsecache::StoreConfig::Redis(http::responsecache::RedisConfig {
-						url: r.url.clone(),
+						target: SimpleBackendReferenceWithPolicies {
+							target: Arc::new(resolve_simple_reference(r.backend.as_ref())),
+							// Not supported inline from xDS; attach them to the Backend instead.
+							policies: Vec::new(),
+						},
+						db: r.db,
+						username: r.username.clone(),
+						password: r.password.clone().map(Into::into),
 						key_prefix: r.key_prefix.clone(),
 						operation_timeout: r.operation_timeout.map(convert_duration),
 					})

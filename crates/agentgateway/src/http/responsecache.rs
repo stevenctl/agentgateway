@@ -20,6 +20,7 @@ use bytes::Bytes;
 
 use crate::cel::{self, Expression, RequestSnapshot};
 use crate::http::{Body, Request, Response};
+use crate::proxy::httpproxy::PolicyClient;
 use crate::*;
 
 mod redis_store;
@@ -143,7 +144,7 @@ impl ResponseCache {
 	}
 
 	/// Looks up `req`, returning the action the proxy should take.
-	pub async fn lookup(&self, req: &mut Request) -> Lookup {
+	pub async fn lookup(&self, client: &PolicyClient, req: &mut Request) -> Lookup {
 		// Everything read from the request happens up front, before the store is awaited: a shared
 		// `&Request` is not `Send`.
 		let Some((key, may_serve, pending)) = self.prepare_lookup(req) else {
@@ -152,7 +153,7 @@ impl ResponseCache {
 		if may_serve {
 			// Fail-open lives here, once, for every backend: a store that errors degrades to an origin
 			// fetch rather than failing the request.
-			match self.storage.get(&key).await {
+			match self.storage.get(client, &key).await {
 				Ok(Some(entry)) => {
 					let now = SystemTime::now();
 					if let Some(variant) = entry.select(&pending.request_headers, now) {
@@ -193,6 +194,7 @@ impl ResponseCache {
 	/// rather than drained, so a response too large to cache still streams to the client untouched.
 	pub async fn store_response(
 		&self,
+		client: &PolicyClient,
 		pending: &PendingStore,
 		resp: &mut Response,
 		request_snapshot: Option<&RequestSnapshot>,
@@ -270,7 +272,7 @@ impl ResponseCache {
 			.collect();
 
 		// Read-modify-write the resource's entry so other variants survive.
-		let mut entry = match self.storage.get(&pending.key).await {
+		let mut entry = match self.storage.get(client, &pending.key).await {
 			Ok(Some(e)) => e,
 			Ok(None) => CacheEntry::default(),
 			Err(e) => {
@@ -299,7 +301,7 @@ impl ResponseCache {
 			entry.variants.remove(0);
 		}
 
-		if let Err(e) = self.storage.insert(&pending.key, entry).await {
+		if let Err(e) = self.storage.insert(client, &pending.key, entry).await {
 			debug!(error = %e, "failed to store response in cache");
 			return false;
 		}

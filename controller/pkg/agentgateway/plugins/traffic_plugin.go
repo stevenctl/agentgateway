@@ -580,7 +580,7 @@ func translateTrafficPolicyToAgw(
 	}
 
 	if traffic.ResponseCache != nil {
-		appendPolicy("responseCache")(processResponseCachePolicy(traffic.ResponseCache, basePolicyName, policyName))
+		appendPolicy("responseCache")(processResponseCachePolicy(ctx, traffic.ResponseCache, basePolicyName, policyName))
 	}
 
 	if traffic.JWTAuthentication != nil {
@@ -642,15 +642,23 @@ func processBufferPolicy(buffer *agentgateway.Buffer, basePolicyName string, pol
 	return bufferPolicy, errors.Join(errs...)
 }
 
-func translateResponseCacheStore(store *agentgateway.ResponseCacheStore) *api.TrafficPolicySpec_ResponseCache {
+func translateResponseCacheStore(ctx PolicyCtx, store *agentgateway.ResponseCacheStore, policyName types.NamespacedName) (*api.TrafficPolicySpec_ResponseCache, error) {
 	rc := &api.TrafficPolicySpec_ResponseCache{}
 	if store == nil {
-		return rc
+		return rc, nil
 	}
+	var errs []error
 	switch {
 	case store.Redis != nil:
+		be, err := BuildBackendRef(ctx, store.Redis.BackendRef, policyName.Namespace)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to build response cache redis store: %v", err))
+		}
 		redis := &api.TrafficPolicySpec_ResponseCache_Redis{
-			Url:       store.Redis.URL,
+			Backend:   be,
+			Db:        store.Redis.DB,
+			Username:  store.Redis.Username,
+			Password:  store.Redis.Password,
 			KeyPrefix: store.Redis.KeyPrefix,
 		}
 		if t := store.Redis.OperationTimeout; t != nil {
@@ -664,11 +672,11 @@ func translateResponseCacheStore(store *agentgateway.ResponseCacheStore) *api.Tr
 			},
 		}
 	}
-	return rc
+	return rc, errors.Join(errs...)
 }
 
-func processResponseCachePolicy(cache *agentgateway.ResponseCache, basePolicyName string, policyName types.NamespacedName) (*api.Policy, error) {
-	translated := translateResponseCacheStore(cache.Store)
+func processResponseCachePolicy(ctx PolicyCtx, cache *agentgateway.ResponseCache, basePolicyName string, policyName types.NamespacedName) (*api.Policy, error) {
+	translated, err := translateResponseCacheStore(ctx, cache.Store, policyName)
 	if v := quantityUint32(cache.MaxBodyBytes); v != nil {
 		translated.MaxBodyBytes = ptr.Of(uint64(*v))
 	}
@@ -690,7 +698,7 @@ func processResponseCachePolicy(cache *agentgateway.ResponseCache, basePolicyNam
 		"policy", basePolicyName,
 		"agentgateway_policy", cachePolicy.Name)
 
-	return cachePolicy, nil
+	return cachePolicy, err
 }
 
 func translatePolicyInheritance(strategy *agentgateway.PolicyStrategy) api.Policy_Inheritance {
@@ -2298,6 +2306,9 @@ func referencedBackendRefsFromPolicy(policy *agentgateway.AgentgatewayPolicy) []
 					app(p.JWKS.Remote.BackendRef)
 				}
 			}
+		}
+		if rc := s.Traffic.ResponseCache; rc != nil && rc.Store != nil && rc.Store.Redis != nil {
+			app(rc.Store.Redis.BackendRef)
 		}
 	}
 	if s.Frontend != nil {

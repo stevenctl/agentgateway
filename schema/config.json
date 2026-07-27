@@ -7196,9 +7196,42 @@
     "RedisConfig": {
       "type": "object",
       "properties": {
-        "url": {
-          "description": "Connection URL, e.g. `redis://host:6379/0` or `rediss://host:6379` for TLS.",
-          "type": "string"
+        "policies": {
+          "description": "Backend policies used when connecting to the service.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SimpleLocalBackendPolicies"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "db": {
+          "description": "Database index selected after connecting. Defaults to 0.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "username": {
+          "description": "Username sent with `AUTH`, for servers using ACLs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "password": {
+          "description": "Password sent with `AUTH`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileOrInline"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "keyPrefix": {
           "description": "Prefix prepended to every key, to namespace this cache within a shared Redis.",
@@ -7216,9 +7249,63 @@
           "default": null
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "url"
+      "unevaluatedProperties": false,
+      "oneOf": [
+        {
+          "description": "Service reference. Service must be defined in the top level services list.",
+          "type": "object",
+          "properties": {
+            "service": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "Name of the target Service, as defined in the top-level `services` list.",
+                  "$ref": "#/$defs/NamespacedHostname"
+                },
+                "port": {
+                  "description": "Port on the target Service to route to.",
+                  "type": "integer",
+                  "format": "uint16",
+                  "minimum": 0,
+                  "maximum": 65535
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "port"
+              ]
+            }
+          },
+          "required": [
+            "service"
+          ]
+        },
+        {
+          "description": "Hostname or IP address",
+          "type": "object",
+          "properties": {
+            "host": {
+              "description": "Hostname or IP address",
+              "type": "string"
+            }
+          },
+          "required": [
+            "host"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "description": "Explicit backend reference. Backend must be defined in the top level backends list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "backend"
+          ]
+        }
       ]
     },
     "TimeoutPolicy": {

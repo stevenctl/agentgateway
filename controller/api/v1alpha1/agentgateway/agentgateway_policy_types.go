@@ -3144,9 +3144,25 @@ type InMemoryStore struct {
 
 // RedisStore is a shared cache store backed by Redis.
 type RedisStore struct {
-	// Connection URL, e.g. redis://host:6379/0 or rediss://host:6379 for TLS.
+	// Redis server to connect to. Policies attached to the referenced Backend, such as TLS or a
+	// tunnel, apply to the connection.
+	//
+	// Supported types: `Service` and `Backend`.
 	// +required
-	URL string `json:"url"`
+	BackendRef gwv1.BackendObjectReference `json:"backendRef"`
+
+	// Database index selected after connecting. Defaults to 0.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	DB *int64 `json:"db,omitempty"`
+
+	// Username sent with AUTH, for servers using ACLs.
+	// +optional
+	Username *string `json:"username,omitempty"`
+
+	// Password sent with AUTH.
+	// +optional
+	Password *string `json:"password,omitempty"`
 
 	// Prefix prepended to every key, to namespace this cache within a shared Redis.
 	// +optional

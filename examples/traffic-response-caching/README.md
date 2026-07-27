@@ -76,9 +76,25 @@ policies:
   responseCache:
     store:
       redis:
-        url: redis://localhost:6379/0
+        host: localhost:6379
+        db: 0
         keyPrefix: "agw:"
         operationTimeout: 500ms
+```
+
+The server is named the same way as any other backend — `host`, a `name`/`port` service
+reference, or `backend` pointing at a top-level Backend — so the connection is made through
+the gateway's own connector and backend policies apply to it. TLS, for example, is configured
+rather than implied by a URL scheme:
+
+```yaml
+      redis:
+        host: redis.example.com:6380
+        password:
+          file: /etc/redis/password
+        policies:
+          backendTLS:
+            root: /etc/certs/redis-ca.pem
 ```
 
 If Redis is unreachable, the cache fails open: requests fall through to the upstream

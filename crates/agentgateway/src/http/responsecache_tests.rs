@@ -10,6 +10,11 @@ fn now() -> SystemTime {
 	T0 + Duration::from_secs(1_700_000_000)
 }
 
+/// Only a remote store connects through this; the in-memory store these tests use ignores it.
+fn client() -> PolicyClient {
+	crate::test_helpers::policy_client()
+}
+
 fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
 	let mut h = HeaderMap::new();
 	for (k, v) in pairs {
@@ -308,7 +313,7 @@ async fn body_string(resp: &mut Response) -> String {
 #[tokio::test]
 async fn miss_then_hit_serves_stored_response() {
 	let c = cache();
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("first lookup should miss");
 	};
 	let mut resp = response(
@@ -319,10 +324,10 @@ async fn miss_then_hit_serves_stored_response() {
 		],
 		"hello",
 	);
-	assert!(c.store_response(&pending, &mut resp, None).await);
+	assert!(c.store_response(&client(), &pending, &mut resp, None).await);
 	assert_eq!(body_string(&mut resp).await, "hello"); // client still gets it
 
-	let Lookup::Hit(mut hit) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Hit(mut hit) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("second lookup should hit");
 	};
 	assert_eq!(
@@ -337,37 +342,37 @@ async fn miss_then_hit_serves_stored_response() {
 async fn ttl_default_applies_only_when_response_declares_none() {
 	// With a default ttl, a response with no Cache-Control is cached.
 	let c = cache_with(Some("30s"));
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("miss");
 	};
 	let mut resp = response(StatusCode::OK, &[], "hi");
-	assert!(c.store_response(&pending, &mut resp, None).await);
+	assert!(c.store_response(&client(), &pending, &mut resp, None).await);
 	assert!(matches!(
-		c.lookup(&mut get("http://example.com/a")).await,
+		c.lookup(&client(), &mut get("http://example.com/a")).await,
 		Lookup::Hit(_)
 	));
 
 	// Without a default ttl, the same response is not cached.
 	let c = cache();
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/b")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/b")).await else {
 		panic!("miss");
 	};
 	let mut resp = response(StatusCode::OK, &[], "hi");
-	assert!(!c.store_response(&pending, &mut resp, None).await);
+	assert!(!c.store_response(&client(), &pending, &mut resp, None).await);
 }
 
 #[tokio::test]
 async fn origin_freshness_wins_over_ttl_default() {
 	// ttl default would be 1s, but the origin says 60s — origin wins.
 	let c = cache_with(Some("1s"));
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("miss");
 	};
 	let mut resp = response(StatusCode::OK, &[("cache-control", "max-age=60")], "x");
-	assert!(c.store_response(&pending, &mut resp, None).await);
+	assert!(c.store_response(&client(), &pending, &mut resp, None).await);
 	// A hit right away confirms it was stored with the origin's (longer) lifetime.
 	assert!(matches!(
-		c.lookup(&mut get("http://example.com/a")).await,
+		c.lookup(&client(), &mut get("http://example.com/a")).await,
 		Lookup::Hit(_)
 	));
 }
@@ -379,18 +384,21 @@ async fn cel_ttl_can_refuse_by_returning_zero() {
 		"response.code >= 500 ? duration(\"0s\") : duration(\"30s\")",
 	));
 
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/ok")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/ok")).await else {
 		panic!("miss");
 	};
 	let mut ok = response(StatusCode::OK, &[], "good");
-	assert!(c.store_response(&pending, &mut ok, None).await);
+	assert!(c.store_response(&client(), &pending, &mut ok, None).await);
 
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/err")).await else {
+	let Lookup::Miss(pending) = c
+		.lookup(&client(), &mut get("http://example.com/err"))
+		.await
+	else {
 		panic!("miss");
 	};
 	// 501 is a cacheable status, but the ttl expression returns 0 for it.
 	let mut err = response(StatusCode::NOT_IMPLEMENTED, &[], "bad");
-	assert!(!c.store_response(&pending, &mut err, None).await);
+	assert!(!c.store_response(&client(), &pending, &mut err, None).await);
 }
 
 /// Vary is honored automatically: variants are split by the varied header, with no config.
@@ -402,7 +410,7 @@ async fn vary_splits_variants_automatically() {
 	gzip_req
 		.headers_mut()
 		.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
-	let Lookup::Miss(gzip_pending) = c.lookup(&mut gzip_req).await else {
+	let Lookup::Miss(gzip_pending) = c.lookup(&client(), &mut gzip_req).await else {
 		panic!("miss");
 	};
 	let mut gzip_resp = response(
@@ -410,14 +418,17 @@ async fn vary_splits_variants_automatically() {
 		&[("cache-control", "max-age=60"), ("vary", "accept-encoding")],
 		"GZIPPED",
 	);
-	assert!(c.store_response(&gzip_pending, &mut gzip_resp, None).await);
+	assert!(
+		c.store_response(&client(), &gzip_pending, &mut gzip_resp, None)
+			.await
+	);
 
 	// A request with a different Accept-Encoding is a MISS, not a wrong hit.
 	let mut br_req = get("http://example.com/a");
 	br_req
 		.headers_mut()
 		.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
-	let Lookup::Miss(br_pending) = c.lookup(&mut br_req).await else {
+	let Lookup::Miss(br_pending) = c.lookup(&client(), &mut br_req).await else {
 		panic!("different Accept-Encoding must not hit the gzip variant");
 	};
 	let mut br_resp = response(
@@ -425,14 +436,17 @@ async fn vary_splits_variants_automatically() {
 		&[("cache-control", "max-age=60"), ("vary", "accept-encoding")],
 		"BROTLI",
 	);
-	assert!(c.store_response(&br_pending, &mut br_resp, None).await);
+	assert!(
+		c.store_response(&client(), &br_pending, &mut br_resp, None)
+			.await
+	);
 
 	// Now each Accept-Encoding gets its own stored body.
 	let mut gzip_req2 = get("http://example.com/a");
 	gzip_req2
 		.headers_mut()
 		.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
-	let Lookup::Hit(mut hit) = c.lookup(&mut gzip_req2).await else {
+	let Lookup::Hit(mut hit) = c.lookup(&client(), &mut gzip_req2).await else {
 		panic!("gzip should hit");
 	};
 	assert_eq!(body_string(&mut hit).await, "GZIPPED");
@@ -441,7 +455,7 @@ async fn vary_splits_variants_automatically() {
 	br_req2
 		.headers_mut()
 		.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
-	let Lookup::Hit(mut hit) = c.lookup(&mut br_req2).await else {
+	let Lookup::Hit(mut hit) = c.lookup(&client(), &mut br_req2).await else {
 		panic!("br should hit");
 	};
 	assert_eq!(body_string(&mut hit).await, "BROTLI");
@@ -450,7 +464,7 @@ async fn vary_splits_variants_automatically() {
 #[tokio::test]
 async fn vary_wildcard_is_never_cached() {
 	let c = cache();
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("miss");
 	};
 	let mut resp = response(
@@ -458,14 +472,14 @@ async fn vary_wildcard_is_never_cached() {
 		&[("cache-control", "max-age=60"), ("vary", "*")],
 		"x",
 	);
-	assert!(!c.store_response(&pending, &mut resp, None).await);
+	assert!(!c.store_response(&client(), &pending, &mut resp, None).await);
 }
 
 #[tokio::test]
 async fn uncacheable_responses_are_not_stored() {
 	let c = cache();
 	let mut req = get("http://example.com/a");
-	let Lookup::Miss(pending) = c.lookup(&mut req).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut req).await else {
 		panic!("miss");
 	};
 	for pairs in [
@@ -475,7 +489,7 @@ async fn uncacheable_responses_are_not_stored() {
 	] {
 		let mut resp = response(StatusCode::OK, &pairs, "x");
 		assert!(
-			!c.store_response(&pending, &mut resp, None).await,
+			!c.store_response(&client(), &pending, &mut resp, None).await,
 			"{pairs:?}"
 		);
 	}
@@ -485,8 +499,11 @@ async fn uncacheable_responses_are_not_stored() {
 		&[("cache-control", "max-age=60")],
 		"x",
 	);
-	assert!(!c.store_response(&pending, &mut resp, None).await);
-	assert!(matches!(c.lookup(&mut req).await, Lookup::Miss(_)));
+	assert!(!c.store_response(&client(), &pending, &mut resp, None).await);
+	assert!(matches!(
+		c.lookup(&client(), &mut req).await,
+		Lookup::Miss(_)
+	));
 }
 
 #[tokio::test]
@@ -494,7 +511,7 @@ async fn oversized_bodies_are_not_cached_but_still_stream() {
 	let mut c = cache();
 	c.max_body_bytes = 4;
 	let mut req = get("http://example.com/big");
-	let Lookup::Miss(pending) = c.lookup(&mut req).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut req).await else {
 		panic!("miss");
 	};
 	let mut resp = response(
@@ -502,34 +519,43 @@ async fn oversized_bodies_are_not_cached_but_still_stream() {
 		&[("cache-control", "max-age=60")],
 		"much longer than four",
 	);
-	assert!(!c.store_response(&pending, &mut resp, None).await);
+	assert!(!c.store_response(&client(), &pending, &mut resp, None).await);
 	assert_eq!(body_string(&mut resp).await, "much longer than four");
-	assert!(matches!(c.lookup(&mut req).await, Lookup::Miss(_)));
+	assert!(matches!(
+		c.lookup(&client(), &mut req).await,
+		Lookup::Miss(_)
+	));
 }
 
 #[tokio::test]
 async fn request_no_store_bypasses_and_no_cache_skips_the_hit() {
 	let c = cache();
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("miss");
 	};
 	let mut resp = response(StatusCode::OK, &[("cache-control", "max-age=30")], "hello");
-	assert!(c.store_response(&pending, &mut resp, None).await);
+	assert!(c.store_response(&client(), &pending, &mut resp, None).await);
 
 	let mut no_store = get("http://example.com/a");
 	no_store
 		.headers_mut()
 		.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-	assert!(matches!(c.lookup(&mut no_store).await, Lookup::Bypass));
+	assert!(matches!(
+		c.lookup(&client(), &mut no_store).await,
+		Lookup::Bypass
+	));
 
 	let mut no_cache = get("http://example.com/a");
 	no_cache
 		.headers_mut()
 		.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-	assert!(matches!(c.lookup(&mut no_cache).await, Lookup::Miss(_)));
+	assert!(matches!(
+		c.lookup(&client(), &mut no_cache).await,
+		Lookup::Miss(_)
+	));
 
 	assert!(matches!(
-		c.lookup(&mut get("http://example.com/a")).await,
+		c.lookup(&client(), &mut get("http://example.com/a")).await,
 		Lookup::Hit(_)
 	));
 }
@@ -542,7 +568,10 @@ async fn non_cacheable_methods_bypass() {
 		.uri("http://example.com/a")
 		.body(Body::empty())
 		.unwrap();
-	assert!(matches!(c.lookup(&mut req).await, Lookup::Bypass));
+	assert!(matches!(
+		c.lookup(&client(), &mut req).await,
+		Lookup::Bypass
+	));
 }
 
 #[tokio::test]
@@ -552,17 +581,17 @@ async fn authorized_requests_are_only_cached_when_permitted() {
 	req
 		.headers_mut()
 		.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer t"));
-	let Lookup::Miss(pending) = c.lookup(&mut req).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut req).await else {
 		panic!("miss");
 	};
 	let mut resp = response(StatusCode::OK, &[("cache-control", "max-age=60")], "secret");
-	assert!(!c.store_response(&pending, &mut resp, None).await);
+	assert!(!c.store_response(&client(), &pending, &mut resp, None).await);
 	let mut resp = response(
 		StatusCode::OK,
 		&[("cache-control", "public, max-age=60")],
 		"shared",
 	);
-	assert!(c.store_response(&pending, &mut resp, None).await);
+	assert!(c.store_response(&client(), &pending, &mut resp, None).await);
 }
 
 // ---- storage abstraction ----
@@ -608,19 +637,22 @@ fn stored_response_ages_by_wall_clock() {
 #[tokio::test]
 async fn in_memory_storage_round_trips_and_evicts_dead_entries() {
 	let s = InMemoryStorage::new(4);
+	let c = client();
 	let key = cache_key(&get("http://example.com/a"));
-	assert!(s.get(&key).await.unwrap().is_none());
+	assert!(s.get(&c, &key).await.unwrap().is_none());
 
 	s.insert(
+		&c,
 		&key,
 		entry(variant(Duration::from_secs(60), SystemTime::now())),
 	)
 	.await
 	.unwrap();
-	assert!(s.get(&key).await.unwrap().is_some());
+	assert!(s.get(&c, &key).await.unwrap().is_some());
 
 	// An entry whose only variant is already stale is dropped on read.
 	s.insert(
+		&c,
 		&key,
 		entry(variant(
 			Duration::from_secs(5),
@@ -629,7 +661,7 @@ async fn in_memory_storage_round_trips_and_evicts_dead_entries() {
 	)
 	.await
 	.unwrap();
-	assert!(s.get(&key).await.unwrap().is_none());
+	assert!(s.get(&c, &key).await.unwrap().is_none());
 }
 
 /// A backing store that fails every operation, to prove the consumer degrades rather than each
@@ -639,10 +671,19 @@ struct AlwaysFailingStorage;
 
 #[async_trait::async_trait]
 impl CacheStorage for AlwaysFailingStorage {
-	async fn get(&self, _key: &CacheKey) -> anyhow::Result<Option<CacheEntry>> {
+	async fn get(
+		&self,
+		_client: &PolicyClient,
+		_key: &CacheKey,
+	) -> anyhow::Result<Option<CacheEntry>> {
 		anyhow::bail!("store down")
 	}
-	async fn insert(&self, _key: &CacheKey, _value: CacheEntry) -> anyhow::Result<()> {
+	async fn insert(
+		&self,
+		_client: &PolicyClient,
+		_key: &CacheKey,
+		_value: CacheEntry,
+	) -> anyhow::Result<()> {
 		anyhow::bail!("store down")
 	}
 }
@@ -655,11 +696,11 @@ async fn failing_store_degrades_to_origin() {
 		ttl: None,
 		storage: Arc::new(AlwaysFailingStorage),
 	};
-	let Lookup::Miss(pending) = c.lookup(&mut get("http://example.com/a")).await else {
+	let Lookup::Miss(pending) = c.lookup(&client(), &mut get("http://example.com/a")).await else {
 		panic!("a failing store must degrade to a miss");
 	};
 	let mut resp = response(StatusCode::OK, &[("cache-control", "max-age=30")], "hello");
-	assert!(!c.store_response(&pending, &mut resp, None).await);
+	assert!(!c.store_response(&client(), &pending, &mut resp, None).await);
 	assert_eq!(body_string(&mut resp).await, "hello");
 }
 
@@ -678,7 +719,7 @@ fn config_parses_both_store_variants_and_ttl() {
 
 	// CEL ttl + redis store, built offline.
 	let c: ResponseCache = serde_json::from_str(
-		r#"{"store": {"redis": {"url": "redis://cache:6379/0", "keyPrefix": "agw:"}}, "ttl": "response.code == 200 ? duration(\"5m\") : duration(\"0s\")"}"#,
+		r#"{"store": {"redis": {"host": "cache:6379", "db": 1, "keyPrefix": "agw:"}}, "ttl": "response.code == 200 ? duration(\"5m\") : duration(\"0s\")"}"#,
 	)
 	.unwrap();
 	assert!(matches!(c.store, StoreConfig::Redis(_)));

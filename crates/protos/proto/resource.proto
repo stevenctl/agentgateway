@@ -1172,9 +1172,19 @@ message TrafficPolicySpec {
     }
     // Shared store backed by Redis.
     message Redis {
-      string url = 1;
+      // Redis server to connect to. Policies attached to the referenced Backend (TLS, tunnel,
+      // and so on) apply to the connection.
+      BackendReference backend = 4;
       optional string key_prefix = 2;
       google.protobuf.Duration operation_timeout = 3;
+      // Database index selected after connecting. Defaults to 0.
+      optional int64 db = 5;
+      // Credentials sent with AUTH.
+      optional string username = 6;
+      optional string password = 7;
+
+      reserved 1;
+      reserved "url";
     }
     oneof store {
       InMemory in_memory = 1;
