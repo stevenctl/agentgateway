@@ -1879,6 +1879,8 @@ async fn build_simple_backend_call(
 > {
 	let (maybe_inference, mut service_override) =
 		apply_inference_routing(&policies, policy_client, req, log, response_policies).await?;
+	// Only Service backends do endpoint selection; other kinds are single-destination, where
+	// affinity is trivial. TODO: the waypoint path (resolve_service_endpoint) never hashes.
 	service_override.lb_hash = policies
 		.load_balancing
 		.as_ref()

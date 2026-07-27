@@ -2,6 +2,7 @@
 //! lookup/walk over it. Endpoint selection — bucket ordering, health, and capacity filtering —
 //! lives in [`crate::types::loadbalancer`].
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::types::loadbalancer::EndpointKey;
@@ -25,6 +26,9 @@ pub struct HashRing {
 	/// (ring point, owning endpoint key), sorted by point. Keys resolve against any group
 	/// snapshot, so the ring is independent of eviction state and IndexMap ordering.
 	entries: Vec<(u64, EndpointKey)>,
+	/// Distinct endpoints in `entries`; lets `walk` stop once every endpoint has been offered
+	/// instead of scanning all remaining points.
+	unique_endpoints: usize,
 }
 
 /// Builds a ketama-style ring from `(endpoint key, weight)` pairs: each entry hashes
@@ -35,7 +39,10 @@ pub fn build<'a>(weighted: impl Iterator<Item = (&'a EndpointKey, u64)>) -> Arc<
 	let weighted: Vec<(&EndpointKey, u64)> = weighted.filter(|(_, w)| *w > 0).collect();
 	let total_points: u64 = weighted.iter().map(|(_, w)| w * POINTS_PER_WEIGHT).sum();
 	if total_points == 0 {
-		return Arc::new(HashRing { entries: vec![] });
+		return Arc::new(HashRing {
+			entries: vec![],
+			unique_endpoints: 0,
+		});
 	}
 	// Scale the whole ring into [MIN, MAX]; scaling every endpoint by the same factor preserves
 	// weight proportions.
@@ -47,6 +54,7 @@ pub fn build<'a>(weighted: impl Iterator<Item = (&'a EndpointKey, u64)>) -> Arc<
 		1.0
 	};
 
+	let unique_endpoints = weighted.len();
 	let mut entries = Vec::with_capacity(total_points.clamp(MIN_RING_SIZE, MAX_RING_SIZE) as usize);
 	for (key, weight) in weighted {
 		let points = (((weight * POINTS_PER_WEIGHT) as f64 * scale).round() as u64).max(1);
@@ -56,7 +64,10 @@ pub fn build<'a>(weighted: impl Iterator<Item = (&'a EndpointKey, u64)>) -> Arc<
 		}
 	}
 	entries.sort_unstable();
-	Arc::new(HashRing { entries })
+	Arc::new(HashRing {
+		entries,
+		unique_endpoints,
+	})
 }
 
 impl HashRing {
@@ -70,14 +81,28 @@ impl HashRing {
 	pub fn walk(&self, hash: u64) -> impl Iterator<Item = &EndpointKey> + '_ {
 		let start = self.entries.partition_point(|(p, _)| *p < hash);
 		let len = self.entries.len();
-		let mut seen: Vec<&EndpointKey> = Vec::new();
-		(0..len).filter_map(move |off| {
-			let (_, key) = &self.entries[(start + off) % len];
-			if seen.contains(&key) {
-				return None;
+		let mut seen: HashSet<&EndpointKey> = HashSet::new();
+		// The first key skips `seen`: avoid allocating a set we'll usually never read.
+		let mut first: Option<&EndpointKey> = None;
+		let mut off = 0;
+		std::iter::from_fn(move || {
+			if let Some(f) = first
+				&& seen.is_empty()
+			{
+				seen.insert(f);
 			}
-			seen.push(key);
-			Some(key)
+			while seen.len() < self.unique_endpoints && off < len {
+				let (_, key) = &self.entries[(start + off) % len];
+				off += 1;
+				if first.is_none() {
+					first = Some(key);
+					return Some(key);
+				}
+				if seen.insert(key) {
+					return Some(key);
+				}
+			}
+			None
 		})
 	}
 
@@ -89,8 +114,6 @@ impl HashRing {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::HashSet;
-
 	use super::*;
 	use crate::*;
 

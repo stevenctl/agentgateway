@@ -39,14 +39,19 @@ impl HasExpressions for Policy {
 
 impl Policy {
 	/// Computes the consistent-hash key for a request, or None when the key expression fails or
-	/// yields null (callers fall back to the default load balancing algorithm).
+	/// yields null or "" (callers fall back to the default load balancing algorithm; skipping
+	/// empty values matches Envoy's cookie hashing).
 	pub fn request_hash(&self, req: &http::Request) -> Option<u64> {
 		let Algorithm::ConsistentHash(ch) = &self.algorithm;
 		let exec = cel::Executor::new_request(req);
 		match exec.eval(ch.key.as_ref()).ok()?.json().ok()? {
 			serde_json::Value::Null => None,
+			serde_json::Value::String(s) if s.is_empty() => None,
 			serde_json::Value::String(s) => Some(hash(s.as_bytes())),
-			other => Some(hash(other.to_string().as_bytes())),
+			other => {
+				debug!("consistent hash key evaluated to a non-string value; hashing its JSON form");
+				Some(hash(other.to_string().as_bytes()))
+			},
 		}
 	}
 }
@@ -90,11 +95,20 @@ mod tests {
 	}
 
 	#[test]
-	fn absent_key_yields_no_hash() {
-		// Evaluation that resolves to null (missing header) produces no hash rather than an error,
+	fn absent_or_empty_key_yields_no_hash() {
+		// A missing header resolves to null and an empty cookie to ""; neither produces a hash,
 		// so the caller falls back to the default algorithm.
 		let pol = parse(serde_json::json!({"consistentHash": {"key": "request.headers[\"absent\"]"}}));
 		let req = request("http://example.com/", ::http::Method::GET, &[]);
+		assert_eq!(pol.request_hash(&req), None);
+
+		let pol =
+			parse(serde_json::json!({"consistentHash": {"key": "request.headers.cookie(\"sid\")"}}));
+		let req = request(
+			"http://example.com/",
+			::http::Method::GET,
+			&[("cookie", "sid=")],
+		);
 		assert_eq!(pol.request_hash(&req), None);
 	}
 }
