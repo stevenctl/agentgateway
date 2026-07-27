@@ -705,6 +705,18 @@ message FrontendPolicySpec {
     optional uint32 http2_max_header_size = 10;
     // Controls HTTP/1 request header casing when encoding responses.
     HTTPHeaderCase http1_header_case = 11;
+
+    // Continue reading the request body (bounded) when the upstream response
+    // completes before the request body has been fully received.
+    message EarlyResponseDrain {
+      // Maximum number of additional request body bytes to read.
+      // Defaults to the effective buffer limit.
+      optional uint32 max_bytes = 1;
+      // How long to keep reading before giving up and closing the stream.
+      // Defaults to 5s.
+      google.protobuf.Duration timeout = 2;
+    }
+    EarlyResponseDrain early_response_drain = 12;
   }
   message TLS {
     // TLS handshake timeout

@@ -1338,7 +1338,7 @@ impl HTTPProxy {
 			Some(log),
 			response_policies,
 		)
-		.assert_size::<{ 7 * 1024 }>();
+		.assert_size::<{ 8 * 1024 }>();
 
 		// Setup timeout
 		let call_result = if let Some(timeout) = timeout {
@@ -2508,7 +2508,13 @@ async fn make_backend_call(
 	let transport = build_backend_transport(&inputs, &backend_call, hbone_source).await?;
 	dtrace::snapshot!(Request, "final request", &req);
 	let request_body_limit = crate::http::buffer_limit(&req);
-	let req = req.map(|b| dtrace::TracingBody::maybe_wrap("final request", b, request_body_limit));
+	let mut req =
+		req.map(|b| dtrace::TracingBody::maybe_wrap("final request", b, request_body_limit));
+	// Outermost body wrapper: if the upstream responds without consuming the request
+	// body, the remainder is drained through the capture/tracing layers below it.
+	if let Some(state) = crate::http::earlydrain::EarlyDrainBody::wrap(&mut req) {
+		log.add(|l| l.early_drain = Some(state));
+	}
 	let call = client::Call {
 		req,
 		target: backend_call.target,
@@ -4091,7 +4097,7 @@ impl PolicyClient {
 					None,
 					&mut Default::default(),
 				)
-				.assert_size::<{ 7 * 1024 }>(),
+				.assert_size::<{ 8 * 1024 }>(),
 			)
 			.await
 			.map_err(ProxyResponse::downcast)

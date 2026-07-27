@@ -882,6 +882,14 @@ impl Gateway {
 			.map(|h| h.max_buffer_size)
 			.or(tunneled_buffer)
 			.unwrap_or(def.max_buffer_size);
+		let early_drain = policies
+			.http
+			.as_ref()
+			.and_then(|h| h.early_response_drain.as_ref())
+			.map(|d| crate::http::earlydrain::DrainConfig {
+				max_bytes: d.max_bytes,
+				timeout: d.timeout,
+			});
 
 		let max_connection_duration = policies
 			.http
@@ -895,6 +903,9 @@ impl Gateway {
 				let proxy = proxy.clone();
 				let connection = connection.clone();
 				req.extensions_mut().insert(BufferLimit::new(buffer));
+				if let Some(cfg) = early_drain.clone() {
+					req.extensions_mut().insert(cfg);
+				}
 				let req = req.map(crate::http::Body::new);
 				telemetry::request_scope(
 					// This is the per-request HTTP flow future. It is the baseline task state
@@ -1546,7 +1557,8 @@ pub fn auto_server(c: Option<&frontend::HTTP>) -> auto::Builder<::hyper_util::rt
 	let def = frontend::HTTP::default();
 
 	let frontend::HTTP {
-		max_buffer_size: _, // Not handled here
+		max_buffer_size: _,      // Not handled here
+		early_response_drain: _, // Not handled here
 		http1_max_headers,
 		http1_idle_timeout,
 		http1_header_case,

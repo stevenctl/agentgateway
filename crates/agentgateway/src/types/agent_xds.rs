@@ -3079,6 +3079,16 @@ fn frontend_policy_from_proto(
 				.max_buffer_size
 				.map(|v| v as usize)
 				.unwrap_or_else(crate::defaults::max_buffer_size),
+			early_response_drain: h
+				.early_response_drain
+				.as_ref()
+				.map(|d| frontend::EarlyResponseDrain {
+					max_bytes: d.max_bytes.map(|v| v as usize),
+					timeout: d
+						.timeout
+						.map(convert_duration)
+						.unwrap_or_else(crate::defaults::early_response_drain_timeout),
+				}),
 			http1_max_headers: h.http1_max_headers.map(|v| v as usize),
 			http1_idle_timeout: h
 				.http1_idle_timeout

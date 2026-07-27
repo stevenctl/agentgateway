@@ -555,6 +555,16 @@ func translateFrontendHTTP(policy *agentgateway.AgentgatewayPolicy, name string)
 	if v := http.MaxBufferSize; v != nil {
 		spec.MaxBufferSize = quantityUint32(v)
 	}
+	if v := http.EarlyResponseDrain; v != nil {
+		drain := &api.FrontendPolicySpec_HTTP_EarlyResponseDrain{}
+		if v.MaxBytes != nil {
+			drain.MaxBytes = quantityUint32(v.MaxBytes)
+		}
+		if v.Timeout != nil {
+			drain.Timeout = durationpb.New(v.Timeout.Duration)
+		}
+		spec.EarlyResponseDrain = drain
+	}
 	if v := http.HTTP1MaxHeaders; v != nil {
 		spec.Http1MaxHeaders = castUint32(v) //nolint:gosec // G115: kubebuilder validation ensures safe for uint32
 	}

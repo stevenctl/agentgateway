@@ -6066,6 +6066,45 @@ spec:
                   http:
                     description: Settings for managing incoming HTTP requests.
                     properties:
+                      earlyResponseDrain:
+                        description: |-
+                          Continue reading the request body (bounded) when the upstream
+                          response completes before the request body has been fully received,
+                          for example a backend that rejects an upload without consuming it.
+                          This preserves `HTTP/1` connection reuse when the remainder fits
+                          within the bounds, and makes body capture (access logs/traces)
+                          complete for bodies up to the bound.
+                          If unset, early responses close the connection without draining.
+                        properties:
+                          maxBytes:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Maximum number of additional request body bytes to read.
+                              If unset, this defaults to the effective buffer limit
+                              (`maxBufferSize`, or a route-level override).
+                            maxLength: 32
+                            minLength: 1
+                            pattern: ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)(([KMGTPE]i)|[numkMGTPE]|[eE](\+?0*([0-9]|1[0-8])|-0*[0-9]))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: value must be at least 1 byte and fit within
+                                uint32
+                              rule: (self >= 1 && self <= 4294967295) || self.size()
+                                > 0
+                          timeout:
+                            description: |-
+                              How long to keep reading before giving up and closing the stream.
+                              If unset, this defaults to `5s`.
+                            maxLength: 32
+                            type: string
+                            x-kubernetes-validations:
+                            - message: invalid duration value
+                              rule: matches(self, '^([0-9]{1,5}(h|m|s|ms)){1,4}$')
+                            - message: timeout must be at least 1 second
+                              rule: duration(self) >= duration('1s')
+                        type: object
                       http1HeaderCase:
                         description: |-
                           Controls HTTP/1 request header name casing when encoding responses on the same connection.
@@ -6210,11 +6249,12 @@ spec:
                           rule: duration(self) >= duration('1s')
                     type: object
                     x-kubernetes-validations:
-                    - message: at least one of the fields in [http1HeaderCase http1IdleTimeout
-                        http1MaxHeaders http2ConnectionWindowSize http2FrameSize http2KeepaliveInterval
-                        http2KeepaliveTimeout http2MaxHeaderSize http2WindowSize maxBufferSize
-                        maxConnectionDuration] must be set
-                      rule: '[has(self.http1HeaderCase),has(self.http1IdleTimeout),has(self.http1MaxHeaders),has(self.http2ConnectionWindowSize),has(self.http2FrameSize),has(self.http2KeepaliveInterval),has(self.http2KeepaliveTimeout),has(self.http2MaxHeaderSize),has(self.http2WindowSize),has(self.maxBufferSize),has(self.maxConnectionDuration)].filter(x,x==true).size()
+                    - message: at least one of the fields in [earlyResponseDrain http1HeaderCase
+                        http1IdleTimeout http1MaxHeaders http2ConnectionWindowSize
+                        http2FrameSize http2KeepaliveInterval http2KeepaliveTimeout
+                        http2MaxHeaderSize http2WindowSize maxBufferSize maxConnectionDuration]
+                        must be set
+                      rule: '[has(self.earlyResponseDrain),has(self.http1HeaderCase),has(self.http1IdleTimeout),has(self.http1MaxHeaders),has(self.http2ConnectionWindowSize),has(self.http2FrameSize),has(self.http2KeepaliveInterval),has(self.http2KeepaliveTimeout),has(self.http2MaxHeaderSize),has(self.http2WindowSize),has(self.maxBufferSize),has(self.maxConnectionDuration)].filter(x,x==true).size()
                         >= 1'
                   metrics:
                     description: |-

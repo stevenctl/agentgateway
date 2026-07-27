@@ -19,6 +19,7 @@ pub mod backendtls;
 pub mod basicauth;
 pub mod compression;
 pub mod csrf;
+pub mod earlydrain;
 pub mod envoy_proto_common;
 pub mod ext_authz;
 pub mod ext_proc;

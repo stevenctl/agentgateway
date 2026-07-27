@@ -659,6 +659,16 @@ type FrontendHTTP struct {
 	// +optional
 	MaxBufferSize *ByteSize `json:"maxBufferSize,omitempty"`
 
+	// Continue reading the request body (bounded) when the upstream
+	// response completes before the request body has been fully received,
+	// for example a backend that rejects an upload without consuming it.
+	// This preserves `HTTP/1` connection reuse when the remainder fits
+	// within the bounds, and makes body capture (access logs/traces)
+	// complete for bodies up to the bound.
+	// If unset, early responses close the connection without draining.
+	// +optional
+	EarlyResponseDrain *FrontendHTTPEarlyResponseDrain `json:"earlyResponseDrain,omitempty"`
+
 	// Maximum number of headers allowed
 	// in `HTTP/1.1` requests.
 	// If unset, this defaults to 100.
@@ -724,6 +734,23 @@ type FrontendHTTP struct {
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1s')",message="maxConnectionDuration must be at least 1 second"
 	// +optional
 	MaxConnectionDuration *metav1.Duration `json:"maxConnectionDuration,omitempty"`
+}
+
+type FrontendHTTPEarlyResponseDrain struct {
+	// Maximum number of additional request body bytes to read.
+	// If unset, this defaults to the effective buffer limit
+	// (`maxBufferSize`, or a route-level override).
+	// +optional
+	MaxBytes *ByteSize `json:"maxBytes,omitempty"`
+
+	// How long to keep reading before giving up and closing the stream.
+	// If unset, this defaults to `5s`.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:XValidation:rule="matches(self, '^([0-9]{1,5}(h|m|s|ms)){1,4}$')",message="invalid duration value"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1s')",message="timeout must be at least 1 second"
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
 
 // +kubebuilder:validation:AtLeastOneFieldSet

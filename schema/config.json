@@ -8998,6 +8998,18 @@
           "minimum": 0,
           "default": 2097152
         },
+        "earlyResponseDrain": {
+          "description": "Drain the request body (bounded) when the response completes first. Off by default.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EarlyResponseDrain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "http1MaxHeaders": {
           "description": "Maximum number of headers allowed in an HTTP/1 request. Changing this value causes a\nperformance degradation, even when set lower than the default of 100.",
           "type": [
@@ -9081,6 +9093,28 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "EarlyResponseDrain": {
+      "description": "Continue reading the request body after the upstream response completes before the request\nhas been fully received (for example, a backend that rejects an upload without consuming it).\nBounded by `maxBytes` and `timeout`. Preserves HTTP/1 connection reuse when the remainder\nfits within the bounds, and makes body capture (access logs/traces) complete for bodies up\nto the bound. Comparable to nginx `lingering_close`.",
+      "type": "object",
+      "properties": {
+        "maxBytes": {
+          "description": "Maximum number of additional request body bytes to read. Defaults to the effective\nbuffer limit (`maxBufferSize`, or a route-level override).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "timeout": {
+          "description": "How long to keep reading before giving up and closing the stream.",
+          "type": "string",
+          "default": "5s"
         }
       },
       "additionalProperties": false

@@ -14553,6 +14553,9 @@
 |`frontendPolicies`|object|frontendPolicies defines top level policies applying to all traffic.|
 |`frontendPolicies.http`|object|Settings for handling incoming HTTP requests.|
 |`frontendPolicies.http.maxBufferSize`|integer|Maximum request or response body size buffered by the frontend.|
+|`frontendPolicies.http.earlyResponseDrain`|object|Drain the request body (bounded) when the response completes first. Off by default.|
+|`frontendPolicies.http.earlyResponseDrain.maxBytes`|integer|Maximum number of additional request body bytes to read. Defaults to the effective<br>buffer limit (`maxBufferSize`, or a route-level override).|
+|`frontendPolicies.http.earlyResponseDrain.timeout`|string|How long to keep reading before giving up and closing the stream.|
 |`frontendPolicies.http.http1MaxHeaders`|integer|Maximum number of headers allowed in an HTTP/1 request. Changing this value causes a<br>performance degradation, even when set lower than the default of 100.|
 |`frontendPolicies.http.http1IdleTimeout`|string|How long an idle HTTP/1 connection may stay open.|
 |`frontendPolicies.http.http1HeaderCase`|enum|Header casing behavior for HTTP/1 responses.<br>Possible values: `lowercase`, `preserve`.|

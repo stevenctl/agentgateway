@@ -941,6 +941,7 @@ impl RequestLog {
 			response_snapshot: None,
 			source_context: None,
 			response_bytes: 0,
+			early_drain: None,
 		}
 	}
 
@@ -1099,10 +1100,37 @@ pub struct RequestLog {
 	pub source_context: Option<cel::SourceContext>,
 
 	pub response_bytes: u64,
+
+	/// Set when the request body is still being drained after an early upstream
+	/// response; the log flush waits for it so body capture is complete.
+	pub early_drain: Option<Arc<crate::http::earlydrain::DrainState>>,
 }
 
 impl Drop for DropOnLog {
 	fn drop(&mut self) {
+		// If the request body outlived the response, drain it and defer the flush so
+		// captured-body fields reflect the drained bytes. The drain bounds itself.
+		if let Some(state) = self.log.as_ref().and_then(|l| l.early_drain.clone())
+			&& {
+				state.begin_drain();
+				!state.is_finished()
+			} && let Ok(handle) = tokio::runtime::Handle::try_current()
+		{
+			let deferred = DropOnLog {
+				log: self.log.take(),
+				debug_tracer: self.debug_tracer.take(),
+			};
+			handle.spawn(async move {
+				if tokio::time::timeout(state.wait_budget(), state.wait())
+					.await
+					.is_err()
+				{
+					state.abandon();
+				}
+				drop(deferred);
+			});
+			return;
+		}
 		let status = self
 			.log
 			.as_ref()

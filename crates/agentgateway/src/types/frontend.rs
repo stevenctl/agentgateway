@@ -42,6 +42,34 @@ pub enum HTTPHeaderCase {
 	Preserve,
 }
 
+/// Continue reading the request body after the upstream response completes before the request
+/// has been fully received (for example, a backend that rejects an upload without consuming it).
+/// Bounded by `maxBytes` and `timeout`. Preserves HTTP/1 connection reuse when the remainder
+/// fits within the bounds, and makes body capture (access logs/traces) complete for bodies up
+/// to the bound. Comparable to nginx `lingering_close`.
+#[apply(schema!)]
+#[serde_with::skip_serializing_none]
+pub struct EarlyResponseDrain {
+	/// Maximum number of additional request body bytes to read. Defaults to the effective
+	/// buffer limit (`maxBufferSize`, or a route-level override).
+	#[serde(default)]
+	pub max_bytes: Option<usize>,
+	/// How long to keep reading before giving up and closing the stream.
+	#[serde(with = "serde_dur")]
+	#[cfg_attr(feature = "schema", schemars(with = "String"))]
+	#[serde(default = "defaults::early_response_drain_timeout")]
+	pub timeout: Duration,
+}
+
+impl Default for EarlyResponseDrain {
+	fn default() -> Self {
+		Self {
+			max_bytes: None,
+			timeout: defaults::early_response_drain_timeout(),
+		}
+	}
+}
+
 #[apply(schema!)]
 #[serde_with::skip_serializing_none]
 #[cfg_attr(feature = "schema", schemars(rename = "FrontendHTTP"))]
@@ -49,6 +77,10 @@ pub struct HTTP {
 	/// Maximum request or response body size buffered by the frontend.
 	#[serde(default = "defaults::max_buffer_size")]
 	pub max_buffer_size: usize,
+
+	/// Drain the request body (bounded) when the response completes first. Off by default.
+	#[serde(default)]
+	pub early_response_drain: Option<EarlyResponseDrain>,
 
 	/// Maximum number of headers allowed in an HTTP/1 request. Changing this value causes a
 	/// performance degradation, even when set lower than the default of 100.
@@ -99,6 +131,7 @@ impl Default for HTTP {
 	fn default() -> Self {
 		Self {
 			max_buffer_size: defaults::max_buffer_size(),
+			early_response_drain: None,
 
 			http1_max_headers: None,
 			http1_idle_timeout: defaults::http1_idle_timeout(),

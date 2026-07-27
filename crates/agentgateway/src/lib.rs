@@ -331,6 +331,10 @@ mod defaults {
 		// Default to 10 minutes
 		Duration::from_secs(60 * 10)
 	}
+
+	pub fn early_response_drain_timeout() -> Duration {
+		Duration::from_secs(5)
+	}
 }
 
 #[apply(schema_de!)]
