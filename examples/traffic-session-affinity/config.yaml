@@ -52,14 +52,9 @@ binds:
           loadBalancing:
             consistentHash:
               key: request.headers.cookie("sid")
-          # Hand-rolled affinity-cookie generation: on the first response (client has
-          # no `sid`), mint a random one so the browser echoes it back and pins the
-          # session from then on. When the cookie is already present the expression
-          # evaluates to null, so no Set-Cookie is emitted.
-          #
-          # NOTE: this is a demonstration of what CEL can express today. A future
-          # Gateway API sessionPersistence policy will provide managed cookie/TTL
-          # semantics without hand-rolled CEL.
+          # Mint a random `sid` cookie on the first response so there is something to
+          # hash on; when the cookie is already present the expression is null and no
+          # Set-Cookie is emitted. See README.md for details and caveats.
           transformations:
             response:
               add:

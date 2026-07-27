@@ -182,10 +182,9 @@ impl<T> EndpointGroup<T> {
 		)
 	}
 
-	/// Rebuilds the ring from the configured endpoint set. Called only when endpoints are
-	/// added or removed — eviction merely moves an endpoint between the active and rejected
-	/// pools, which the ring spans, so it stays valid across evict/unevict without a rebuild.
-	/// No-op until a hashed request has activated the ring (see `select_hash`).
+	/// Called only on endpoint add/remove — eviction moves endpoints between pools the ring
+	/// already spans, so evict/unevict need no rebuild. No-op until a hashed request has
+	/// activated the ring (see `select_hash`).
 	fn rebuild_ring(&mut self) {
 		if let RingState::Built(_) = self.ring {
 			self.ring = RingState::Built(self.build_ring());
@@ -354,8 +353,7 @@ impl EndpointSet<Endpoint> {
 		target_port: u16,
 		hash: u64,
 	) -> Option<Candidate> {
-		// Checked before the ring: activation takes the writer mutex and clones the group, and an
-		// empty bucket has nothing to select from regardless.
+		// An empty bucket has nothing to select from; don't activate a ring for it.
 		if slot.load().active.is_empty() {
 			return None;
 		}
@@ -1928,119 +1926,11 @@ mod tests {
 		);
 	}
 
-	// End-to-end: the ring wired into `select_endpoint`, not just the ring in isolation.
-	#[test]
-	fn select_hash_drives_endpoint_selection() {
-		use std::collections::{HashMap, HashSet};
+	/// Service with one bucket per zone and a workload per pod, serving port 80.
+	fn hash_test_svc(zones: &[&[&str]]) -> (Service, store::DiscoveryStore) {
+		use std::collections::HashMap;
 
 		use crate::types::discovery::HealthStatus;
-
-		let uids = ["ep-0", "ep-1", "ep-2"];
-		let mk_ep = |uid: &str| {
-			(
-				Strng::from(uid),
-				Endpoint {
-					workload_uid: Strng::from(uid),
-					port: HashMap::from([(80u16, 80u16)]),
-					status: HealthStatus::default(),
-				},
-			)
-		};
-		let svc = Service {
-			hostname: "echo".into(),
-			ports: HashMap::from([(80u16, 80u16)]),
-			endpoints: EndpointSet::<Endpoint>::new(vec![uids.iter().map(|u| mk_ep(u)).collect()]),
-			..Default::default()
-		};
-		let mut disc = store::DiscoveryStore::new();
-		for uid in uids {
-			disc.workloads.insert(Arc::new(Workload {
-				uid: Strng::from(uid),
-				..Default::default()
-			}));
-		}
-
-		// Takes the store by ref so it can be mutated between calls (see the degradation case).
-		let pick = |store: &store::WorkloadStore, h: Option<u64>| {
-			svc
-				.endpoints
-				.select_endpoint(store, &svc, 80, None, h)
-				.map(|(ep, _, _)| ep.workload_uid.to_string())
-		};
-		let key = |s: &str| crate::http::loadbalancing::hash(s.as_bytes());
-
-		// 1. A hashed request selects a viable endpoint, and the same hash is sticky.
-		let h = key("session-abc");
-		let chosen = pick(&disc.workloads, Some(h)).expect("hashed request selects an endpoint");
-		for _ in 0..25 {
-			assert_eq!(
-				pick(&disc.workloads, Some(h)).as_deref(),
-				Some(chosen.as_str())
-			);
-		}
-
-		// 2. That selection is the ring owner for the hash — the ring drove it, not P2C luck.
-		{
-			let bucket = svc
-				.endpoints
-				.buckets
-				.iter()
-				.find(|b| !b.load().active.is_empty())
-				.unwrap();
-			let g = bucket.load();
-			let owner = g.build_ring().walk(h).next().unwrap().to_string();
-			assert_eq!(chosen, owner, "select_hash must return the ring owner");
-		}
-
-		// 3. Distinct keys spread across all three endpoints.
-		let mut seen = HashSet::new();
-		for i in 0..300u64 {
-			seen.insert(pick(&disc.workloads, Some(key(&format!("k{i}")))).unwrap());
-		}
-		assert_eq!(
-			seen.len(),
-			3,
-			"all three endpoints should receive traffic: {seen:?}"
-		);
-
-		// 4. With no hash, selection falls back to the default algorithm.
-		assert!(pick(&disc.workloads, None).is_some());
-
-		// 5. Graceful degradation: when one endpoint stops being viable, only the keys it owned
-		//    move; every other key keeps its endpoint (health-at-selection, minimal disruption).
-		let before: Vec<(u64, String)> = (0..300u64)
-			.map(|i| {
-				let hh = key(&format!("k{i}"));
-				(hh, pick(&disc.workloads, Some(hh)).unwrap())
-			})
-			.collect();
-		// Drain ep-0 by zeroing its workload capacity: `viable()` filters it, the ring is untouched.
-		disc.workloads.insert(Arc::new(Workload {
-			uid: Strng::from("ep-0"),
-			capacity: 0,
-			..Default::default()
-		}));
-		for (hh, was) in &before {
-			let now = pick(&disc.workloads, Some(*hh)).unwrap();
-			if was == "ep-0" {
-				assert_ne!(now, "ep-0", "keys on the drained endpoint must move off it");
-			} else {
-				assert_eq!(&now, was, "keys not on the drained endpoint must not move");
-			}
-		}
-	}
-
-	// An operator cordons the local zone for maintenance — every zone-local pod is drained, but
-	// nothing is deleted. Sessions pinned there must move to the remote zone and stay pinned,
-	// spread over its pods, instead of all piling onto whichever pod is momentarily least loaded.
-	#[test]
-	fn ringhash_fails_over_when_local_zone_fully_drained() {
-		use std::collections::{HashMap, HashSet};
-
-		use crate::types::discovery::HealthStatus;
-
-		let local_zone = ["local-0", "local-1"];
-		let remote_zone = ["remote-0", "remote-1", "remote-2"];
 		let mk_pod = |uid: &str| {
 			(
 				Strng::from(uid),
@@ -2054,47 +1944,128 @@ mod tests {
 		let svc = Service {
 			hostname: "echo".into(),
 			ports: HashMap::from([(80u16, 80u16)]),
-			endpoints: EndpointSet::<Endpoint>::new(vec![
-				local_zone.iter().map(|u| mk_pod(u)).collect(),
-				remote_zone.iter().map(|u| mk_pod(u)).collect(),
-			]),
+			endpoints: EndpointSet::<Endpoint>::new(
+				zones
+					.iter()
+					.map(|zone| zone.iter().map(|u| mk_pod(u)).collect())
+					.collect(),
+			),
 			..Default::default()
 		};
 		let mut disc = store::DiscoveryStore::new();
-		for uid in local_zone.iter().chain(remote_zone.iter()) {
+		for uid in zones.iter().flat_map(|z| z.iter()) {
 			disc.workloads.insert(Arc::new(Workload {
 				uid: Strng::from(*uid),
 				..Default::default()
 			}));
 		}
-		let route = |store: &store::WorkloadStore, session: u64| {
-			svc
-				.endpoints
-				.select_endpoint(store, &svc, 80, None, Some(session))
-				.map(|(ep, _, _)| ep.workload_uid.to_string())
-		};
-		let session_of = |s: &str| crate::http::loadbalancing::hash(s.as_bytes());
+		(svc, disc)
+	}
+
+	fn pick(svc: &Service, store: &store::WorkloadStore, h: Option<u64>) -> Option<String> {
+		svc
+			.endpoints
+			.select_endpoint(store, svc, 80, None, h)
+			.map(|(ep, _, _)| ep.workload_uid.to_string())
+	}
+
+	/// Zero a workload's capacity while it stays published, so `viable()` filters it.
+	fn drain(disc: &mut store::DiscoveryStore, uid: &str) {
+		disc.workloads.insert(Arc::new(Workload {
+			uid: Strng::from(uid),
+			capacity: 0,
+			..Default::default()
+		}));
+	}
+
+	fn hash_key(s: &str) -> u64 {
+		crate::http::loadbalancing::hash(s.as_bytes())
+	}
+
+	// End-to-end: the ring wired into `select_endpoint`, not just the ring in isolation.
+	#[test]
+	fn select_hash_drives_endpoint_selection() {
+		use std::collections::HashSet;
+
+		let (svc, mut disc) = hash_test_svc(&[&["ep-0", "ep-1", "ep-2"]]);
+
+		// 1. A hashed request selects a viable endpoint, and the same hash is sticky.
+		let h = hash_key("session-abc");
+		let chosen = pick(&svc, &disc.workloads, Some(h)).expect("hashed request selects an endpoint");
+		for _ in 0..25 {
+			assert_eq!(
+				pick(&svc, &disc.workloads, Some(h)).as_deref(),
+				Some(chosen.as_str())
+			);
+		}
+
+		// 2. That selection is the ring owner for the hash — the ring drove it, not P2C luck.
+		let owner = svc.endpoints.buckets[0]
+			.load()
+			.build_ring()
+			.walk(h)
+			.next()
+			.unwrap()
+			.to_string();
+		assert_eq!(chosen, owner, "select_hash must return the ring owner");
+
+		// 3. Distinct keys spread across all three endpoints.
+		let mut seen = HashSet::new();
+		for i in 0..300u64 {
+			seen.insert(pick(&svc, &disc.workloads, Some(hash_key(&format!("k{i}")))).unwrap());
+		}
+		assert_eq!(
+			seen.len(),
+			3,
+			"all three endpoints should receive traffic: {seen:?}"
+		);
+
+		// 4. Graceful degradation: when one endpoint stops being viable, only the keys it owned
+		//    move; every other key keeps its endpoint (health-at-selection, minimal disruption).
+		let before: Vec<(u64, String)> = (0..300u64)
+			.map(|i| {
+				let hh = hash_key(&format!("k{i}"));
+				(hh, pick(&svc, &disc.workloads, Some(hh)).unwrap())
+			})
+			.collect();
+		drain(&mut disc, "ep-0");
+		for (hh, was) in &before {
+			let now = pick(&svc, &disc.workloads, Some(*hh)).unwrap();
+			if was == "ep-0" {
+				assert_ne!(now, "ep-0", "keys on the drained endpoint must move off it");
+			} else {
+				assert_eq!(&now, was, "keys not on the drained endpoint must not move");
+			}
+		}
+	}
+
+	// An operator cordons the local zone for maintenance — every zone-local pod is drained, but
+	// nothing is deleted. Sessions pinned there must move to the remote zone and stay pinned,
+	// spread over its pods, instead of all piling onto whichever pod is momentarily least loaded.
+	#[test]
+	fn ringhash_fails_over_when_local_zone_fully_drained() {
+		use std::collections::HashSet;
+
+		let local_zone = ["local-0", "local-1"];
+		let remote_zone = ["remote-0", "remote-1", "remote-2"];
+		let (svc, mut disc) = hash_test_svc(&[&local_zone, &remote_zone]);
 		let sessions: Vec<u64> = (0..300u64)
-			.map(|i| session_of(&format!("user-{i}")))
+			.map(|i| hash_key(&format!("user-{i}")))
 			.collect();
 
 		// Steady state: the local zone serves every session.
 		for s in &sessions {
-			assert!(local_zone.contains(&route(&disc.workloads, *s).unwrap().as_str()));
+			assert!(local_zone.contains(&pick(&svc, &disc.workloads, Some(*s)).unwrap().as_str()));
 		}
 
 		// Cordon the zone. The pods are still published, just at zero capacity.
 		for uid in local_zone {
-			disc.workloads.insert(Arc::new(Workload {
-				uid: Strng::from(uid),
-				capacity: 0,
-				..Default::default()
-			}));
+			drain(&mut disc, uid);
 		}
 
 		let rehomed: Vec<String> = sessions
 			.iter()
-			.map(|s| route(&disc.workloads, *s).unwrap())
+			.map(|s| pick(&svc, &disc.workloads, Some(*s)).unwrap())
 			.collect();
 		assert!(
 			rehomed.iter().all(|e| remote_zone.contains(&e.as_str())),
@@ -2109,11 +2080,10 @@ mod tests {
 		// Every session keeps its new pod, and that pod is the one the remote zone's ring assigns
 		// it — so two gateways seeing the same drain agree, and a restart lands sessions back where
 		// they were.
-		let g = svc.endpoints.buckets[1].load();
-		let ring = g.build_ring();
+		let ring = svc.endpoints.buckets[1].load().build_ring();
 		for (s, pod) in sessions.iter().zip(&rehomed) {
 			assert_eq!(
-				&route(&disc.workloads, *s).unwrap(),
+				&pick(&svc, &disc.workloads, Some(*s)).unwrap(),
 				pod,
 				"session must stay pinned after failover"
 			);

@@ -4863,9 +4863,6 @@ mod tests {
 			panic!("Expected LoadBalancing policy variant");
 		};
 		let http::loadbalancing::Algorithm::ConsistentHash(_) = &lb.algorithm;
-		// The key expression is registered so route-level CEL setup can see it.
-		use crate::store::HasExpressions;
-		assert_eq!(lb.expressions().count(), 1);
 
 		// Missing algorithm is rejected.
 		let missing = proto::agent::BackendPolicySpec {

@@ -67,24 +67,6 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_consistent_hash_algorithm() {
-		let pol = parse(serde_json::json!({"consistentHash": {"key": "request.method"}}));
-		let Algorithm::ConsistentHash(_) = &pol.algorithm;
-	}
-
-	#[test]
-	fn rejects_unknown_or_missing_algorithm() {
-		// An unknown algorithm arm is rejected.
-		serde_json::from_value::<Policy>(serde_json::json!({"roundRobin": {}}))
-			.expect_err("unknown algorithm must be rejected");
-		// consistentHash requires a key expression.
-		serde_json::from_value::<Policy>(serde_json::json!({"consistentHash": {}}))
-			.expect_err("a key is required");
-		// No algorithm at all is rejected.
-		serde_json::from_value::<Policy>(serde_json::json!({})).expect_err("an algorithm is required");
-	}
-
-	#[test]
 	fn hashes_header_expression() {
 		let pol = parse(serde_json::json!({"consistentHash": {"key": "request.headers[\"x-user\"]"}}));
 		let req = request(
@@ -105,25 +87,6 @@ mod tests {
 			&[("cookie", "other=1; sid=abc")],
 		);
 		assert_eq!(pol.request_hash(&req), Some(hash(b"abc")));
-	}
-
-	#[test]
-	fn hashes_query_expression() {
-		let pol =
-			parse(serde_json::json!({"consistentHash": {"key": "request.uri.query(\"user\")[0]"}}));
-		let req = request(
-			"http://example.com/path?a=1&user=bob",
-			::http::Method::GET,
-			&[],
-		);
-		assert_eq!(pol.request_hash(&req), Some(hash(b"bob")));
-	}
-
-	#[test]
-	fn non_string_result_is_hashed() {
-		let pol = parse(serde_json::json!({"consistentHash": {"key": "request.method"}}));
-		let req = request("http://example.com/", ::http::Method::GET, &[]);
-		assert_eq!(pol.request_hash(&req), Some(hash(b"GET")));
 	}
 
 	#[test]

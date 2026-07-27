@@ -1,9 +1,6 @@
-//! Ketama-style consistent hash ring.
-//!
-//! Owns the ring itself — construction from weighted endpoint keys, and the lookup/walk over it.
-//! Endpoint selection lives in [`crate::types::loadbalancer`]: bucket ordering, health, and
-//! capacity filtering are shared by every load balancing algorithm, so they are deliberately not
-//! part of this module.
+//! Ketama-style consistent hash ring: construction from weighted endpoint keys, and the
+//! lookup/walk over it. Endpoint selection — bucket ordering, health, and capacity filtering —
+//! lives in [`crate::types::loadbalancer`].
 
 use std::sync::Arc;
 
@@ -15,8 +12,7 @@ use crate::types::loadbalancer::EndpointKey;
 /// only the keys owned by the endpoints that actually changed.
 const POINTS_PER_WEIGHT: u64 = 160;
 /// Floor on total ring size (matching Envoy's default minimum). Below it, per-endpoint points
-/// scale up proportionally so small clusters still spread keys evenly (a 2-endpoint service
-/// would otherwise get only 320 points, skewing each endpoint's share by well over 10%).
+/// scale up proportionally so small clusters still spread keys evenly.
 const MIN_RING_SIZE: u64 = 1024;
 /// Cap on total ring size. Beyond it, per-endpoint points scale down proportionally
 /// (weights quantize, and stability across the boundary degrades slightly).
@@ -43,11 +39,9 @@ pub enum RingState {
 }
 
 /// Builds a ketama-style ring from `(endpoint key, weight)` pairs: each entry hashes
-/// `{endpoint_key}_{i}` with xxhash64, sorted by point for binary-search lookup.
-///
-/// Callers pass the whole *configured* endpoint set, evicted endpoints included, so a health blip
-/// never reshuffles the keyspace and the ring is identical across instances that disagree on
-/// health. Currently-unviable owners are skipped at selection time instead (see [`HashRing::walk`]).
+/// `{endpoint_key}_{i}` with xxhash64, sorted by point for binary-search lookup. What goes into
+/// the ring — and why unviable endpoints stay in it — is decided by the caller
+/// (`EndpointGroup::build_ring`).
 pub fn build<'a>(weighted: impl Iterator<Item = (&'a EndpointKey, u64)>) -> Arc<HashRing> {
 	let weighted: Vec<(&EndpointKey, u64)> = weighted.filter(|(_, w)| *w > 0).collect();
 	let total_points: u64 = weighted.iter().map(|(_, w)| w * POINTS_PER_WEIGHT).sum();
