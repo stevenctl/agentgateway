@@ -16,9 +16,10 @@ use tokio::time::sleep_until;
 use crate::types::discovery::{
 	Endpoint, LoadBalancer, LoadBalancerMode, LoadBalancerScopes, Service, Workload,
 };
+use crate::types::ringhash::{self, HashRing, RingState};
 use crate::*;
 
-type EndpointKey = Strng;
+pub(crate) type EndpointKey = Strng;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EndpointWithInfo<T> {
@@ -84,103 +85,6 @@ fn build_sampler<T>(active: &IndexMap<EndpointKey, EndpointWithInfo<T>>) -> Samp
 	let dist = WeightedIndex::new(active.values().map(|e| e.capacity as u64))
 		.expect("non-empty, non-all-zero u64 weights cannot fail WeightedIndex::new");
 	Sampler::Weighted(dist)
-}
-
-/// Consistent-hash ring over a group's configured endpoints. Only built for services that a
-/// loadBalancing.consistentHash policy actually routes to (see `RingState`).
-#[derive(Debug, Clone, Default)]
-pub enum RingState {
-	/// No hashed request has targeted this group; membership changes skip ring builds.
-	#[default]
-	Inactive,
-	/// Ring is maintained: rebuilt when endpoints are added or removed (not on eviction).
-	Built(Arc<HashRing>),
-}
-
-#[derive(Debug)]
-pub struct HashRing {
-	/// (ring point, owning endpoint key), sorted by point. Keys resolve against any group
-	/// snapshot, so the ring is independent of eviction state and IndexMap ordering.
-	entries: Vec<(u64, EndpointKey)>,
-}
-
-/// Ring points per unit of endpoint capacity (nginx's ketama allocation: weight * 160).
-/// Points depend only on the endpoint's own weight — unlike Envoy's globally-rescaled ring,
-/// membership changes never reallocate the surviving endpoints' points, so a change remaps
-/// only the keys owned by the endpoints that actually changed.
-const POINTS_PER_WEIGHT: u64 = 160;
-/// Floor on total ring size (matching Envoy's default minimum). Below it, per-endpoint points
-/// scale up proportionally so small clusters still spread keys evenly (a 2-endpoint service
-/// would otherwise get only 320 points, skewing each endpoint's share by well over 10%).
-const MIN_RING_SIZE: u64 = 1024;
-/// Cap on total ring size. Beyond it, per-endpoint points scale down proportionally
-/// (weights quantize, and stability across the boundary degrades slightly).
-const MAX_RING_SIZE: u64 = 65536;
-
-/// Builds a ketama-style ring over the configured endpoint set (active + rejected): each entry
-/// hashes `{endpoint_key}_{i}` with xxhash64, sorted by point for binary-search lookup.
-///
-/// Evicted endpoints keep their points (they live in `rejected`), so a health blip never
-/// reshuffles the keyspace and the ring is identical across instances that disagree on health;
-/// currently-unviable owners are skipped at selection time (see `walk` and `select_hash`).
-fn build_ring<T>(
-	active: &IndexMap<EndpointKey, EndpointWithInfo<T>>,
-	rejected: &IndexMap<EndpointKey, EndpointWithInfo<T>>,
-) -> Arc<HashRing> {
-	let weighted: Vec<(&EndpointKey, u64)> = active
-		.iter()
-		.chain(rejected.iter())
-		.filter(|(_, e)| e.capacity > 0)
-		.map(|(k, e)| (k, e.capacity as u64))
-		.collect();
-	let total_points: u64 = weighted.iter().map(|(_, w)| w * POINTS_PER_WEIGHT).sum();
-	if total_points == 0 {
-		return Arc::new(HashRing { entries: vec![] });
-	}
-	// Scale the whole ring into [MIN, MAX]; scaling every endpoint by the same factor preserves
-	// weight proportions.
-	let scale = if total_points > MAX_RING_SIZE {
-		MAX_RING_SIZE as f64 / total_points as f64
-	} else if total_points < MIN_RING_SIZE {
-		MIN_RING_SIZE as f64 / total_points as f64
-	} else {
-		1.0
-	};
-
-	let mut entries =
-		Vec::with_capacity((total_points as f64 * scale).ceil() as usize + weighted.len());
-	for (key, weight) in weighted {
-		let points = (((weight * POINTS_PER_WEIGHT) as f64 * scale).round() as u64).max(1);
-		for i in 0..points {
-			let point = crate::http::loadbalancing::hash(format!("{key}_{i}").as_bytes());
-			entries.push((point, key.clone()));
-		}
-	}
-	entries.sort_unstable();
-	Arc::new(HashRing { entries })
-}
-
-impl HashRing {
-	pub fn is_empty(&self) -> bool {
-		self.entries.is_empty()
-	}
-
-	/// Iterates owning endpoint keys starting at the ring position owning `hash` (the first
-	/// point at or after it, wrapping), skipping repeats — the ketama "walk to the next
-	/// host" order used when the owning endpoint is not viable.
-	pub fn walk(&self, hash: u64) -> impl Iterator<Item = &EndpointKey> + '_ {
-		let start = self.entries.partition_point(|(p, _)| *p < hash);
-		let len = self.entries.len();
-		let mut seen: Vec<&EndpointKey> = Vec::new();
-		(0..len).filter_map(move |off| {
-			let (_, key) = &self.entries[(start + off) % len];
-			if seen.contains(&key) {
-				return None;
-			}
-			seen.push(key);
-			Some(key)
-		})
-	}
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,13 +169,26 @@ impl<T> EndpointGroup<T> {
 		}
 	}
 
+	/// Builds a ring over the *configured* endpoint set — both pools, evicted endpoints included —
+	/// so a health blip never reshuffles the keyspace and instances that disagree on health still
+	/// agree on the ring. Drained endpoints carry no weight and so hold no points.
+	fn build_ring(&self) -> Arc<HashRing> {
+		ringhash::build(
+			self
+				.active
+				.iter()
+				.chain(self.rejected.iter())
+				.map(|(k, e)| (k, e.capacity as u64)),
+		)
+	}
+
 	/// Rebuilds the ring from the configured endpoint set. Called only when endpoints are
 	/// added or removed — eviction merely moves an endpoint between the active and rejected
 	/// pools, which the ring spans, so it stays valid across evict/unevict without a rebuild.
 	/// No-op until a hashed request has activated the ring (see `select_hash`).
 	fn rebuild_ring(&mut self) {
 		if let RingState::Built(_) = self.ring {
-			self.ring = RingState::Built(build_ring(&self.active, &self.rejected));
+			self.ring = RingState::Built(self.build_ring());
 		}
 	}
 }
@@ -409,9 +326,9 @@ impl EndpointSet<Endpoint> {
 			.max_by(|a, b| a.info.score().total_cmp(&b.info.score()))
 	}
 
-	/// Consistent-hash selection: look up `hash` on the best bucket's ring and walk to the
-	/// first viable endpoint (ketama down-host behavior). Returns None when the ring is empty
-	/// or nothing viable — callers fall back to P2C, keeping hashing best-effort.
+	/// Consistent-hash selection: try each bucket's ring in locality order, taking the first
+	/// viable owner. Returns None when no bucket has one — callers fall back to P2C, keeping
+	/// hashing best-effort.
 	fn select_hash(
 		&self,
 		workloads: &store::WorkloadStore,
@@ -419,7 +336,29 @@ impl EndpointSet<Endpoint> {
 		target_port: u16,
 		hash: u64,
 	) -> Option<Candidate> {
-		let slot = self.buckets.iter().find(|x| !x.load().active.is_empty())?;
+		self
+			.buckets
+			.iter()
+			.find_map(|slot| self.select_hash_in(slot, workloads, svc_port, target_port, hash))
+	}
+
+	/// One bucket's ring: look up `hash` and walk to the first viable endpoint (ketama down-host
+	/// behavior). Falling through to the next bucket keeps failover hash-consistent — otherwise a
+	/// drained locality drops hashed traffic into `select_fallback`, which picks by score and so
+	/// re-shuffles every request.
+	fn select_hash_in(
+		&self,
+		slot: &Atomic<EndpointGroup<Endpoint>>,
+		workloads: &store::WorkloadStore,
+		svc_port: u16,
+		target_port: u16,
+		hash: u64,
+	) -> Option<Candidate> {
+		// Checked before the ring: activation takes the writer mutex and clones the group, and an
+		// empty bucket has nothing to select from regardless.
+		if slot.load().active.is_empty() {
+			return None;
+		}
 		let ring = match &slot.load().ring {
 			RingState::Built(r) => r.clone(),
 			RingState::Inactive => self.activate_ring(slot),
@@ -458,7 +397,7 @@ impl EndpointSet<Endpoint> {
 		if let RingState::Built(r) = &g.ring {
 			return r.clone();
 		}
-		let r = build_ring(&g.active, &g.rejected);
+		let r = g.build_ring();
 		g.ring = RingState::Built(r.clone());
 		slot.store(Arc::new(g));
 		r
@@ -1905,179 +1844,65 @@ mod tests {
 		}
 	}
 
-	// --- HashRing ---
-
-	fn empty_rejected() -> IndexMap<EndpointKey, EndpointWithInfo<()>> {
-		IndexMap::new()
-	}
-
-	fn ring_owner(ring: &HashRing, hash: u64) -> &EndpointKey {
-		ring.walk(hash).next().expect("non-empty ring")
-	}
+	// --- Ring maintenance (the ring structure itself is covered in types::ringhash) ---
 
 	fn ep_key(i: usize) -> EndpointKey {
 		format!("ep{i}").into()
 	}
 
-	#[test]
-	fn ring_deterministic() {
-		let active = make_active(&[1, 1, 1]);
-		let a = build_ring(&active, &empty_rejected());
-		let b = build_ring(&active, &empty_rejected());
-		assert_eq!(a.entries, b.entries);
-		assert!(!a.is_empty());
+	fn group_of(caps: &[u32]) -> EndpointGroup<()> {
+		EndpointGroup::from_pools(make_active(caps), IndexMap::new())
 	}
 
+	// A pod drained to zero capacity must own none of the keyspace, so no session is pinned to
+	// something that cannot serve it.
 	#[test]
-	fn ring_empty_when_all_drained() {
-		assert!(build_ring(&make_active(&[0, 0]), &empty_rejected()).is_empty());
-		assert!(build_ring(&make_active(&[]), &empty_rejected()).is_empty());
+	fn drained_pods_own_none_of_the_keyspace() {
+		let ring = group_of(&[0, 1, 1]).build_ring();
+		assert!(ring.entries().iter().all(|(_, k)| *k != ep_key(0)));
 	}
 
+	// A pod ejected by outlier detection keeps its ring points, so when it recovers its sessions
+	// snap back to it instead of having been permanently redistributed.
 	#[test]
-	fn ring_excludes_zero_capacity_endpoints() {
-		let active = make_active(&[0, 1, 1]);
-		let ring = build_ring(&active, &empty_rejected());
-		assert!(ring.entries.iter().all(|(_, k)| *k != ep_key(0)));
+	fn ejected_pods_keep_their_keyspace_for_when_they_recover() {
+		let mut group = group_of(&[1, 1]);
+		group.evict(ep_key(1));
+		let ring = group.build_ring();
+		assert!(ring.entries().iter().any(|(_, k)| *k == ep_key(1)));
 	}
 
+	// Scaling the deployment up or down must be reflected in the ring, or new pods would sit idle
+	// and removed ones would keep being selected.
 	#[test]
-	fn ring_covers_rejected_endpoints() {
-		// Evicted endpoints live in `rejected` but keep their ring points, so their keyspace
-		// slice snaps back to them on recovery instead of being permanently remapped.
-		let active = make_active(&[1, 1]);
-		let mut rejected = IndexMap::new();
-		rejected.insert(ep_key(2), EndpointWithInfo::with_capacity((), 1));
-		let ring = build_ring(&active, &rejected);
-		assert!(ring.entries.iter().any(|(_, k)| *k == ep_key(2)));
-	}
-
-	#[test]
-	fn ring_weight_proportional_entries() {
-		let active = make_active(&[3, 1]);
-		let ring = build_ring(&active, &empty_rejected());
-		let ep0 = ring.entries.iter().filter(|(_, k)| *k == ep_key(0)).count() as f64;
-		let ep1 = ring.entries.iter().filter(|(_, k)| *k == ep_key(1)).count() as f64;
-		let ratio = ep0 / (ep0 + ep1);
-		assert!(
-			(ratio - 0.75).abs() < 0.01,
-			"ep0 entry share = {ratio} ({ep0}/{ep1})"
-		);
-	}
-
-	#[test]
-	fn ring_honors_min_size() {
-		// Two unit-weight endpoints (320 base points) scale up past the floor.
-		let ring = build_ring(&make_active(&[1, 1]), &empty_rejected());
-		assert!(
-			ring.entries.len() as u64 >= MIN_RING_SIZE,
-			"ring size {} below floor {MIN_RING_SIZE}",
-			ring.entries.len()
-		);
-	}
-
-	#[test]
-	fn ring_balanced_key_distribution() {
-		let active = make_active(&[1; 4]);
-		let ring = build_ring(&active, &empty_rejected());
-		let mut counts = [0u32; 4];
-		let n = 10_000u32;
-		for i in 0..n {
-			let h = crate::http::loadbalancing::hash(format!("key{i}").as_bytes());
-			let idx: usize = ring_owner(&ring, h)
-				.strip_prefix("ep")
-				.unwrap()
-				.parse()
-				.unwrap();
-			counts[idx] += 1;
-		}
-		for (i, c) in counts.iter().enumerate() {
-			let share = *c as f64 / n as f64;
-			// ~25% each; ketama variance at the enforced minimum ring size is well under ±10%.
-			assert!(
-				(share - 0.25).abs() < 0.10,
-				"endpoint {i} share = {share} (counts={counts:?})"
-			);
-		}
-	}
-
-	#[test]
-	fn ring_minimal_remap_on_endpoint_removal() {
-		let before = make_active(&[1; 10]);
-		let ring_before = build_ring(&before, &empty_rejected());
-
-		// Remove the last endpoint; keys resolve by identity, so owners are directly comparable.
-		let after = make_active(&[1; 9]);
-		let ring_after = build_ring(&after, &empty_rejected());
-
-		let removed = ep_key(9);
-		let n = 10_000u32;
-		let mut moved = 0u32;
-		for i in 0..n {
-			let h = crate::http::loadbalancing::hash(format!("key{i}").as_bytes());
-			let owner_before = ring_owner(&ring_before, h);
-			let owner_after = ring_owner(&ring_after, h);
-			if *owner_before != removed {
-				// Keys not owned by the removed endpoint must not move.
-				assert_eq!(
-					owner_before, owner_after,
-					"key{i} moved despite its owner remaining"
-				);
-			} else {
-				moved += 1;
-			}
-		}
-		// The removed endpoint owned ~1/10 of the keyspace.
-		let share = moved as f64 / n as f64;
-		assert!((share - 0.1).abs() < 0.05, "removed-owner share = {share}");
-	}
-
-	#[test]
-	fn ring_walk_yields_distinct_endpoints() {
-		let active = make_active(&[1; 5]);
-		let ring = build_ring(&active, &empty_rejected());
-		let seen: Vec<EndpointKey> = ring.walk(12345).cloned().collect();
-		assert_eq!(seen.len(), 5);
-		let mut sorted = seen.clone();
-		sorted.sort_unstable();
-		sorted.dedup();
-		assert_eq!(
-			sorted.len(),
-			5,
-			"walk must yield each endpoint once: {seen:?}"
-		);
-	}
-
-	#[test]
-	fn ring_rebuilds_on_add_and_remove_when_built() {
+	fn scaling_the_deployment_updates_the_ring() {
 		let mut group = EndpointGroup::<()>::default();
 		group.add("a".into(), EndpointWithInfo::with_capacity((), 1));
-		// Inactive by default: membership changes don't build a ring.
+		// Services that no hash policy routes to never pay to build a ring.
 		assert!(matches!(group.ring, RingState::Inactive));
 
-		group.ring = RingState::Built(build_ring(&group.active, &group.rejected));
+		group.ring = RingState::Built(group.build_ring());
 		group.add("b".into(), EndpointWithInfo::with_capacity((), 1));
 		let RingState::Built(ring) = &group.ring else {
 			panic!("ring must stay built");
 		};
-		// The rebuilt ring covers the added endpoint.
-		assert!(ring.entries.iter().any(|(_, k)| *k == "b"));
+		assert!(ring.entries().iter().any(|(_, k)| *k == "b"));
 
 		group.remove(&"b".into());
 		let RingState::Built(ring) = &group.ring else {
 			panic!("ring must stay built");
 		};
-		assert!(ring.entries.iter().all(|(_, k)| *k != "b"));
+		assert!(ring.entries().iter().all(|(_, k)| *k != "b"));
 	}
 
+	// A pod failing health checks and recovering is not a membership change. If it reshuffled the
+	// ring, every unrelated session in the service would move on a single pod's blip.
 	#[test]
-	fn ring_unchanged_across_eviction() {
-		// Eviction moves an endpoint between pools without touching the configured set, so the
-		// ring — and thus the whole keyspace mapping — must stay byte-for-byte identical.
+	fn a_health_blip_does_not_reshuffle_the_keyspace() {
 		let mut group = EndpointGroup::<()>::default();
 		group.add("a".into(), EndpointWithInfo::with_capacity((), 1));
 		group.add("b".into(), EndpointWithInfo::with_capacity((), 1));
-		group.ring = RingState::Built(build_ring(&group.active, &group.rejected));
+		group.ring = RingState::Built(group.build_ring());
 		let RingState::Built(before) = group.ring.clone() else {
 			panic!("built");
 		};
@@ -2087,8 +1912,9 @@ mod tests {
 			panic!("ring must stay built");
 		};
 		assert_eq!(
-			before.entries, after.entries,
-			"eviction must not rebuild the ring"
+			before.entries(),
+			after.entries(),
+			"ejection must not rebuild the ring"
 		);
 
 		group.unevict("b".into(), |_| true);
@@ -2096,8 +1922,9 @@ mod tests {
 			panic!("ring must stay built");
 		};
 		assert_eq!(
-			before.entries, after.entries,
-			"uneviction must not rebuild the ring"
+			before.entries(),
+			after.entries(),
+			"recovery must not rebuild the ring"
 		);
 	}
 
@@ -2161,11 +1988,7 @@ mod tests {
 				.find(|b| !b.load().active.is_empty())
 				.unwrap();
 			let g = bucket.load();
-			let owner = build_ring(&g.active, &g.rejected)
-				.walk(h)
-				.next()
-				.unwrap()
-				.to_string();
+			let owner = g.build_ring().walk(h).next().unwrap().to_string();
 			assert_eq!(chosen, owner, "select_hash must return the ring owner");
 		}
 
@@ -2204,6 +2027,97 @@ mod tests {
 			} else {
 				assert_eq!(&now, was, "keys not on the drained endpoint must not move");
 			}
+		}
+	}
+
+	// An operator cordons the local zone for maintenance — every zone-local pod is drained, but
+	// nothing is deleted. Sessions pinned there must move to the remote zone and stay pinned,
+	// spread over its pods, instead of all piling onto whichever pod is momentarily least loaded.
+	#[test]
+	fn ringhash_fails_over_when_local_zone_fully_drained() {
+		use std::collections::{HashMap, HashSet};
+
+		use crate::types::discovery::HealthStatus;
+
+		let local_zone = ["local-0", "local-1"];
+		let remote_zone = ["remote-0", "remote-1", "remote-2"];
+		let mk_pod = |uid: &str| {
+			(
+				Strng::from(uid),
+				Endpoint {
+					workload_uid: Strng::from(uid),
+					port: HashMap::from([(80u16, 80u16)]),
+					status: HealthStatus::default(),
+				},
+			)
+		};
+		let svc = Service {
+			hostname: "echo".into(),
+			ports: HashMap::from([(80u16, 80u16)]),
+			endpoints: EndpointSet::<Endpoint>::new(vec![
+				local_zone.iter().map(|u| mk_pod(u)).collect(),
+				remote_zone.iter().map(|u| mk_pod(u)).collect(),
+			]),
+			..Default::default()
+		};
+		let mut disc = store::DiscoveryStore::new();
+		for uid in local_zone.iter().chain(remote_zone.iter()) {
+			disc.workloads.insert(Arc::new(Workload {
+				uid: Strng::from(*uid),
+				..Default::default()
+			}));
+		}
+		let route = |store: &store::WorkloadStore, session: u64| {
+			svc
+				.endpoints
+				.select_endpoint(store, &svc, 80, None, Some(session))
+				.map(|(ep, _, _)| ep.workload_uid.to_string())
+		};
+		let session_of = |s: &str| crate::http::loadbalancing::hash(s.as_bytes());
+		let sessions: Vec<u64> = (0..300u64)
+			.map(|i| session_of(&format!("user-{i}")))
+			.collect();
+
+		// Steady state: the local zone serves every session.
+		for s in &sessions {
+			assert!(local_zone.contains(&route(&disc.workloads, *s).unwrap().as_str()));
+		}
+
+		// Cordon the zone. The pods are still published, just at zero capacity.
+		for uid in local_zone {
+			disc.workloads.insert(Arc::new(Workload {
+				uid: Strng::from(uid),
+				capacity: 0,
+				..Default::default()
+			}));
+		}
+
+		let rehomed: Vec<String> = sessions
+			.iter()
+			.map(|s| route(&disc.workloads, *s).unwrap())
+			.collect();
+		assert!(
+			rehomed.iter().all(|e| remote_zone.contains(&e.as_str())),
+			"cordoned zone must stop serving: {rehomed:?}"
+		);
+		assert_eq!(
+			rehomed.iter().collect::<HashSet<_>>().len(),
+			3,
+			"sessions must spread over the remote zone, not pile onto one pod: {rehomed:?}"
+		);
+
+		// Every session keeps its new pod, and that pod is the one the remote zone's ring assigns
+		// it — so two gateways seeing the same drain agree, and a restart lands sessions back where
+		// they were.
+		let g = svc.endpoints.buckets[1].load();
+		let ring = g.build_ring();
+		for (s, pod) in sessions.iter().zip(&rehomed) {
+			assert_eq!(
+				&route(&disc.workloads, *s).unwrap(),
+				pod,
+				"session must stay pinned after failover"
+			);
+			assert_eq!(&ring.walk(*s).next().unwrap().to_string(), pod);
 		}
 	}
 
