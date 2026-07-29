@@ -6,12 +6,14 @@ pub mod embeddings;
 pub mod messages;
 pub mod rerank;
 pub mod responses;
+pub mod text_group;
 pub mod vertex;
 pub mod vertex_gemini;
 
 use agent_core::prelude::Strng;
 use agent_core::strng;
 use serde::Serialize;
+pub use text_group::TextGroup;
 
 use crate::{AIError, LLMRequest, LLMResponse, apply};
 
@@ -47,7 +49,9 @@ pub trait RequestType: Send + Sync {
 	fn get_messages(&self) -> Vec<SimpleChatCompletionMessage>;
 	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>);
 	fn to_value(&self) -> serde_json::Result<serde_json::Value>;
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String));
+	/// Visit the request's text one logical message at a time, joined per `TextGroup` so guard
+	/// patterns spanning content blocks match, with edits written back per block.
+	fn visit_text_groups(&mut self, f: &mut dyn FnMut(&mut TextGroup));
 }
 
 /// SimpleChatCompletionMessage is a simplified chat message

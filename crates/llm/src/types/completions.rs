@@ -3,9 +3,11 @@ use agent_core::strng::Strng;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{OutputMessage, OutputMessagePart, ResponseType, SimpleChatCompletionMessage};
+use crate::types::{
+	OutputMessage, OutputMessagePart, ResponseType, SimpleChatCompletionMessage, TextGroup,
+};
 use crate::webhook::{Message, ResponseChoice};
-use crate::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse, json};
+use crate::{json, AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
@@ -399,19 +401,24 @@ impl super::RequestType for Request {
 		self.messages = messages.into_iter().map(convert_message).collect();
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_groups(&mut self, f: &mut dyn FnMut(&mut TextGroup)) {
 		for msg in &mut self.messages {
 			// TODO opt-in setting to apply guards to tool results
 			if msg.role == "tool" {
 				continue;
 			}
 			match &mut msg.content {
-				Some(Content::Text(text)) => f(text),
+				Some(Content::Text(text)) => {
+					f(&mut TextGroup::single(text));
+				},
 				Some(Content::Array(parts)) => {
-					for part in parts {
-						if let Some(text) = &mut part.text {
-							f(text);
-						}
+					let mut group = TextGroup::folded(
+						" ",
+						parts.iter_mut().filter_map(|p| p.text.as_mut()).collect(),
+					);
+					f(&mut group);
+					if group.finish() {
+						parts.retain(|p| !matches!(&p.text, Some(t) if t.is_empty()));
 					}
 				},
 				None => {},

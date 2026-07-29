@@ -76,28 +76,48 @@ impl RawInputItem {
 		Some(SimpleChatCompletionMessage { role, content })
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
-		if self.0.get("role").is_some() {
-			match self.0.get_mut("content") {
-				Some(Value::String(text)) => f(text),
-				Some(Value::Array(parts)) => visit_text_parts(parts, f),
-				_ => {},
-			}
+	fn visit_text_groups(&mut self, f: &mut dyn FnMut(&mut TextGroup)) {
+		if self.0.get("role").is_none() {
+			// TODO opt-in setting to apply guards to tool results
+			return;
 		}
-		// TODO opt-in setting to apply guards to tool results
+		match self.0.get_mut("content") {
+			Some(Value::String(text)) => {
+				f(&mut TextGroup::single(text));
+			},
+			Some(Value::Array(parts)) => {
+				let mut group = TextGroup::joined(
+					"\n",
+					parts
+						.iter_mut()
+						.filter_map(|part| {
+							if !is_text_part(part) {
+								return None;
+							}
+							match part.get_mut("text") {
+								Some(Value::String(text)) => Some(text),
+								_ => None,
+							}
+						})
+						.collect(),
+				);
+				f(&mut group);
+				if group.finish() {
+					parts.retain(|part| {
+						!(is_text_part(part) && part.get("text").and_then(|t| t.as_str()) == Some(""))
+					});
+				}
+			},
+			_ => {},
+		}
 	}
 }
 
-fn visit_text_parts(parts: &mut [Value], f: &mut dyn FnMut(&mut String)) {
-	for part in parts {
-		if matches!(
-			part.get("type").and_then(|t| t.as_str()),
-			Some("input_text" | "output_text")
-		) && let Some(Value::String(text)) = part.get_mut("text")
-		{
-			f(text);
-		}
-	}
+fn is_text_part(part: &Value) -> bool {
+	matches!(
+		part.get("type").and_then(|t| t.as_str()),
+		Some("input_text" | "output_text")
+	)
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -415,12 +435,14 @@ impl RequestType for Request {
 		);
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_groups(&mut self, f: &mut dyn FnMut(&mut TextGroup)) {
 		match &mut self.input {
-			RequestInput::Text(text) => f(text),
+			RequestInput::Text(text) => {
+				f(&mut TextGroup::single(text));
+			},
 			RequestInput::Items(items) => {
 				for item in items {
-					item.visit_text_mut(f);
+					item.visit_text_groups(f);
 				}
 			},
 		}

@@ -118,8 +118,10 @@ impl RequestType for Request {
 		unimplemented!("set_messages is used for prompt guard; prompt guard is disabled for detect.")
 	}
 
-	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(&mut String)) {
-		unimplemented!("visit_text_mut is used for prompt guard; prompt guard is disabled for detect.")
+	fn visit_text_groups(&mut self, _f: &mut dyn FnMut(&mut crate::types::TextGroup)) {
+		unimplemented!(
+			"visit_text_groups is used for prompt guard; prompt guard is disabled for detect."
+		)
 	}
 }
 

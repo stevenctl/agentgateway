@@ -1905,3 +1905,222 @@ fn test_apply_regex_response_preserves_tool_structure(
 		None => assert!(matches!(outcome, GuardrailOutcome::Rejected(_))),
 	}
 }
+
+// Cross-content-block scanning: each message is scanned as one joined string (matching the old
+// get_messages() flattening), so patterns spanning adjacent text blocks are detected again.
+#[cfg(test)]
+#[rstest::rstest]
+#[case::completions_reject_across_blocks(
+	ChatFmt::Completions,
+	Action::Reject,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("secret token").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Please use this secret"},
+				{"type": "text", "text": "token to authenticate"}
+			]}
+		]
+	}),
+	Expect::Rejected
+)]
+#[case::anthropic_reject_across_blocks(
+	ChatFmt::Anthropic,
+	Action::Reject,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("secret token").unwrap() }],
+	serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Please use this secret"},
+				{"type": "text", "text": "token to authenticate"}
+			]}
+		]
+	}),
+	Expect::Rejected
+)]
+#[case::responses_reject_across_blocks(
+	ChatFmt::Responses,
+	Action::Reject,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("secret\ntoken").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"input": [
+			{"role": "user", "content": [
+				{"type": "input_text", "text": "Please use this secret"},
+				{"type": "input_text", "text": "token to authenticate"}
+			]}
+		]
+	}),
+	Expect::Rejected
+)]
+#[case::anthropic_reject_ssn_across_blocks(
+	ChatFmt::Anthropic,
+	Action::Reject,
+	ssn_only(),
+	serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "my ssn is 123-45"},
+				{"type": "text", "text": "6789 thanks"}
+			]}
+		]
+	}),
+	Expect::Rejected
+)]
+#[case::completions_mask_across_blocks_placeholder_not_split(
+	ChatFmt::Completions,
+	Action::Mask,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("secret token").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Please use this secret"},
+				{"type": "text", "text": "token to authenticate"}
+			]}
+		]
+	}),
+	Expect::Masked(serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Please use this <masked>"},
+				{"type": "text", "text": " to authenticate"}
+			]}
+		]
+	}))
+)]
+#[case::completions_mask_fully_consumed_block_is_dropped(
+	ChatFmt::Completions,
+	Action::Mask,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("secret token").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Please use this secret"},
+				{"type": "text", "text": "token"},
+				{"type": "text", "text": "later"}
+			]}
+		]
+	}),
+	Expect::Masked(serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Please use this <masked>"},
+				{"type": "text", "text": "later"}
+			]}
+		]
+	}))
+)]
+#[case::anthropic_mask_multibyte_via_builtin(
+	ChatFmt::Anthropic,
+	Action::Mask,
+	ssn_only(),
+	serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "秘密🙂 ssn 123-45"},
+				{"type": "text", "text": "6789 中文"}
+			]}
+		]
+	}),
+	Expect::Masked(serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "秘密🙂 ssn <SSN>"},
+				{"type": "text", "text": " 中文"}
+			]}
+		]
+	}))
+)]
+#[case::zero_width_pattern_is_a_noop(
+	ChatFmt::Completions,
+	Action::Mask,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("z*").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "hello"},
+				{"type": "text", "text": "world"}
+			]}
+		]
+	}),
+	Expect::Unchanged
+)]
+#[case::anchored_pattern_does_not_match_block_start(
+	ChatFmt::Completions,
+	Action::Mask,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("^password:").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "some intro"},
+				{"type": "text", "text": "password: hunter2"}
+			]}
+		]
+	}),
+	Expect::Unchanged
+)]
+#[case::no_match_across_separate_messages(
+	ChatFmt::Completions,
+	Action::Reject,
+	vec![RegexRule::Regex { pattern: regex::Regex::new("secret token").unwrap() }],
+	serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": "Please use this secret"},
+			{"role": "user", "content": "token to authenticate"}
+		]
+	}),
+	Expect::Unchanged
+)]
+fn test_apply_regex_cross_block(
+	#[case] fmt: ChatFmt,
+	#[case] action: Action,
+	#[case] rules: Vec<RegexRule>,
+	#[case] input: serde_json::Value,
+	#[case] expected: Expect,
+) {
+	let (outcome, actual) = run_apply_regex(fmt, action, rules, input);
+	match expected {
+		Expect::Masked(expected) => {
+			assert!(matches!(outcome, GuardrailOutcome::Masked));
+			assert_eq!(actual, expected);
+		},
+		Expect::Rejected => assert!(matches!(outcome, GuardrailOutcome::Rejected(_))),
+		Expect::Unchanged => assert!(matches!(outcome, GuardrailOutcome::None)),
+	}
+}
+
+#[test]
+#[cfg(test)]
+fn test_merge_ranges_desc_is_transitive() {
+	// touching pair plus an overlapping third must fully merge; the old itertools coalesce
+	// emitted overlapping ranges here, corrupting offsets on replacement
+	assert_eq!(
+		super::merge_ranges_desc([7..11, 6..7, 6..11].into_iter()),
+		vec![6..11]
+	);
+	assert_eq!(
+		super::merge_ranges_desc([0..2, 4..6, 1..3].into_iter()),
+		vec![4..6, 0..3]
+	);
+	// adjacent ranges stay separate
+	assert_eq!(
+		super::merge_ranges_desc([0..2, 2..4].into_iter()),
+		vec![2..4, 0..2]
+	);
+}

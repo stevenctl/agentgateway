@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
 	OutputMessage, OutputMessagePart, RequestType, ResponseType, SimpleChatCompletionMessage,
+	TextGroup,
 };
 use crate::webhook::{Message, ResponseChoice};
 use crate::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse};
@@ -257,28 +258,49 @@ impl RequestType for Request {
 		self.messages = message_prompts.into_iter().map(Into::into).collect();
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_groups(&mut self, f: &mut dyn FnMut(&mut TextGroup)) {
 		match &mut self.system {
-			Some(TextBlock::Text(text)) => f(text),
+			Some(TextBlock::Text(text)) => {
+				f(&mut TextGroup::single(text));
+			},
 			Some(TextBlock::Array(parts)) => {
-				for part in parts {
-					if let TextPart::Text { text, .. } = part {
-						f(text);
-					}
+				let mut group = TextGroup::folded(
+					"\n",
+					parts
+						.iter_mut()
+						.filter_map(|p| match p {
+							TextPart::Text { text, .. } => Some(text),
+							TextPart::Unknown(_) => None,
+						})
+						.collect(),
+				);
+				f(&mut group);
+				if group.finish() {
+					parts.retain(|p| !matches!(p, TextPart::Text { text, .. } if text.is_empty()));
 				}
 			},
 			None => {},
 		}
 		for msg in &mut self.messages {
 			match &mut msg.content {
-				Some(ContentBlock::Text(text)) => f(text),
+				Some(ContentBlock::Text(text)) => {
+					f(&mut TextGroup::single(text));
+				},
 				Some(ContentBlock::Array(parts)) => {
-					for part in parts {
-						match part {
-							ContentPart::Text { text, .. } => f(text),
-							// TODO opt-in setting to apply guards to tool results
-							ContentPart::Unknown(_) => {},
-						}
+					let mut group = TextGroup::folded(
+						" ",
+						parts
+							.iter_mut()
+							.filter_map(|p| match p {
+								ContentPart::Text { text, .. } => Some(text),
+								// TODO opt-in setting to apply guards to tool results
+								ContentPart::Unknown(_) => None,
+							})
+							.collect(),
+					);
+					f(&mut group);
+					if group.finish() {
+						parts.retain(|p| !matches!(p, ContentPart::Text { text, .. } if text.is_empty()));
 					}
 				},
 				None => {},

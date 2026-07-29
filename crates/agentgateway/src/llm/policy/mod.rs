@@ -1,13 +1,12 @@
 use ::http::HeaderMap;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
-use itertools::Itertools;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::http::filters::{BackendRequestTimeout, HeaderModifier};
 use crate::http::jwt::Claims;
-use crate::http::{HeaderOrPseudo, Response, StatusCode, auth};
+use crate::http::{auth, HeaderOrPseudo, Response, StatusCode};
 use crate::llm::policy::webhook::{MaskActionBody, RequestAction, ResponseAction};
 use crate::llm::{AIError, RequestType, ResponseType};
 use crate::proxy::httpproxy::PolicyClient;
@@ -395,8 +394,8 @@ impl crate::llm::RequestType for TextRequest {
 		}
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
-		f(&mut self.content);
+	fn visit_text_groups(&mut self, f: &mut dyn FnMut(&mut crate::llm::types::TextGroup)) {
+		f(&mut crate::llm::types::TextGroup::single(&mut self.content));
 	}
 }
 
@@ -1030,17 +1029,16 @@ impl Policy {
 	) -> anyhow::Result<GuardrailOutcome> {
 		let mut any_changed = false;
 		let mut rejected = false;
-		req.visit_text_mut(&mut |text| {
+		req.visit_text_groups(&mut |group| {
 			if rejected {
 				return;
 			}
-			match Self::apply_prompt_guard_regex(text, rgx) {
+			match Self::apply_prompt_guard_regex(group, rgx) {
 				Some(RegexResult::Reject) => {
 					rejected = true;
 				},
-				Some(RegexResult::Mask(masked)) => {
+				Some(RegexResult::Masked) => {
 					any_changed = true;
-					*text = masked;
 				},
 				None => {},
 			}
@@ -1065,13 +1063,13 @@ impl Policy {
 			if rejected {
 				return;
 			}
-			match Self::apply_prompt_guard_regex(text, rgx) {
+			let mut group = crate::llm::types::TextGroup::single(text);
+			match Self::apply_prompt_guard_regex(&mut group, rgx) {
 				Some(RegexResult::Reject) => {
 					rejected = true;
 				},
-				Some(RegexResult::Mask(masked)) => {
+				Some(RegexResult::Masked) => {
 					any_changed = true;
-					*text = masked;
 				},
 				None => {},
 			}
@@ -1274,8 +1272,11 @@ impl Policy {
 	// 	}
 	// }
 
-	fn apply_prompt_guard_regex(original_content: &str, rgx: &RegexRules) -> Option<RegexResult> {
-		let mut working: Option<String> = None;
+	fn apply_prompt_guard_regex(
+		group: &mut crate::llm::types::TextGroup,
+		rgx: &RegexRules,
+	) -> Option<RegexResult> {
+		let mut changed = false;
 
 		for r in &rgx.rules {
 			match r {
@@ -1287,7 +1288,7 @@ impl Policy {
 						Builtin::Email => &*pii::EMAIL,
 						Builtin::CaSin => &*pii::CA_SIN,
 					};
-					let results = pii::recognizer(rec, working.as_deref().unwrap_or(original_content));
+					let results = pii::recognizer(rec, group.text());
 					if results.is_empty() {
 						continue;
 					}
@@ -1295,46 +1296,30 @@ impl Policy {
 						Action::Reject => return Some(RegexResult::Reject),
 						Action::Mask => {
 							let replacement = format!("<{}>", results[0].entity_type);
-							let buf = working.get_or_insert_with(|| original_content.to_string());
-							// Replace in reverse order to avoid index shifting, coalescing overlaps
-							for range in results
-								.into_iter()
-								.map(|r| r.start..r.end)
-								.sorted_unstable_by(|a, b| b.start.cmp(&a.start).then_with(|| a.end.cmp(&b.end)))
-								.coalesce(|a, b| {
-									if b.end > a.start {
-										Ok(b.start..std::cmp::max(a.end, b.end))
-									} else {
-										Err((a, b))
-									}
-								}) {
-								buf.replace_range(range, &replacement);
+							for range in merge_ranges_desc(results.into_iter().map(|r| r.start..r.end)) {
+								changed |= group.replace_range(range, &replacement);
 							}
 						},
 					}
 				},
 				RegexRule::Regex { pattern } => {
-					let content = working.as_deref().unwrap_or(original_content);
 					if matches!(rgx.action, Action::Reject) {
-						if pattern.is_match(content) {
+						if pattern.is_match(group.text()) {
 							return Some(RegexResult::Reject);
 						}
 						continue;
 					}
+
+					// reverse order to preserve offsets
 					let ranges: Vec<std::ops::Range<usize>> =
-						pattern.find_iter(content).map(|m| m.range()).collect();
-					if ranges.is_empty() {
-						continue;
-					}
-					let buf = working.get_or_insert_with(|| original_content.to_string());
-					// Reverse order to avoid index shifting
+						pattern.find_iter(group.text()).map(|m| m.range()).collect();
 					for range in ranges.into_iter().rev() {
-						buf.replace_range(range, "<masked>");
+						changed |= group.replace_range(range, "<masked>");
 					}
 				},
 			}
 		}
-		working.map(RegexResult::Mask)
+		changed.then_some(RegexResult::Masked)
 	}
 
 	pub async fn apply_response_prompt_guard(
@@ -1416,8 +1401,25 @@ impl Policy {
 }
 
 enum RegexResult {
-	Mask(String),
+	Masked,
 	Reject,
+}
+
+/// multiple patterns over may hit the same spans, merge them and sort them in decending order
+fn merge_ranges_desc(
+	ranges: impl Iterator<Item = std::ops::Range<usize>>,
+) -> Vec<std::ops::Range<usize>> {
+	let mut rs: Vec<_> = ranges.collect();
+	rs.sort_unstable_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+	let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+	for r in rs {
+		match out.last_mut() {
+			Some(last) if r.start < last.end => last.end = last.end.max(r.end),
+			_ => out.push(r),
+		}
+	}
+	out.reverse();
+	out
 }
 
 #[apply(schema!)]
@@ -2009,17 +2011,21 @@ fn test_apply_prompt_guard_regex_mask(
 	#[case] input: &str,
 	#[case] expected: &str,
 ) {
+	let mut text = input.to_string();
+	let mut group = crate::llm::types::TextGroup::single(&mut text);
 	let result = Policy::apply_prompt_guard_regex(
-		input,
+		&mut group,
 		&RegexRules {
 			action: Action::Mask,
 			rules,
 		},
 	);
-	match result {
-		Some(RegexResult::Mask(masked)) => assert_eq!(masked, expected),
-		_ => panic!("expected masked result"),
-	}
+	assert!(
+		matches!(result, Some(RegexResult::Masked)),
+		"expected masked result"
+	);
+	drop(group);
+	assert_eq!(text, expected);
 }
 
 #[cfg(test)]
@@ -2027,8 +2033,10 @@ fn test_apply_prompt_guard_regex_mask(
 #[case::regex(vec![RegexRule::Regex { pattern: regex::Regex::new(r"\d{2}").unwrap() }], "id:12")]
 #[case::builtin(vec![RegexRule::Builtin { builtin: Builtin::Email }], "contact john.doe@example.com")]
 fn test_apply_prompt_guard_regex_reject(#[case] rules: Vec<RegexRule>, #[case] input: &str) {
+	let mut text = input.to_string();
+	let mut group = crate::llm::types::TextGroup::single(&mut text);
 	let result = Policy::apply_prompt_guard_regex(
-		input,
+		&mut group,
 		&RegexRules {
 			action: Action::Reject,
 			rules,
