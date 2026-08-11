@@ -2126,4 +2126,60 @@ mod tests {
 				.contains("boom")
 		);
 	}
+
+	#[tokio::test]
+	async fn colliding_server_request_ids_route_to_their_upstream() {
+		// Two multiplexed upstreams both ping with id 0; each remapped id must
+		// round-trip back to its own upstream.
+		use rmcp::model::{PingRequest, ServerRequest};
+
+		let shared_id = RequestId::Number(0);
+		let mut ids = vec![];
+		for upstream in ["upstream-a", "upstream-b"] {
+			let ping = ServerJsonRpcMessage::request(
+				ServerRequest::PingRequest(PingRequest::default()),
+				shared_id.clone(),
+			);
+			let mut tracked = track_outbound_server_requests(upstream.into(), Messages::from(ping));
+			let ServerJsonRpcMessage::Request(req) = tracked.next().await.unwrap().unwrap() else {
+				panic!("expected request");
+			};
+			let (parsed_upstream, original_id) =
+				parse_downstream_server_request_id(&req.id).expect("parsed");
+			assert_eq!(parsed_upstream.as_str(), upstream);
+			assert_eq!(original_id, shared_id);
+			ids.push(req.id);
+		}
+		assert_ne!(ids[0], ids[1]);
+	}
+
+	#[test]
+	fn remapped_id_roundtrip() {
+		// The remapped form is opaque; only encode->parse round-tripping matters.
+		// Original ids come off the wire and can contain anything.
+		let cases = [
+			("backend", RequestId::Number(7)),
+			("backend", RequestId::Number(-7)),
+			("backend", RequestId::String("part:n:7".into())),
+			("backend", RequestId::String("part_n_7".into())),
+			("post-backend", RequestId::String("agw_x_n_1".into())),
+			("post-backend", RequestId::String("".into())),
+		];
+		for (upstream, original_id) in cases {
+			let remapped = downstream_server_request_id(upstream, &original_id);
+			let (parsed_upstream, parsed_id) =
+				parse_downstream_server_request_id(&remapped).expect("parsed");
+			assert_eq!(parsed_upstream.as_str(), upstream);
+			assert_eq!(parsed_id, original_id);
+		}
+	}
+
+	#[test]
+	fn remapped_id_rejects_malformed_payload() {
+		// An id in our namespace that does not parse must not route; guessing
+		// would forward a corrupted id to the upstream.
+		for id in ["agw_backend_x_7", "agw_backend_n_notanumber", "agw_backend"] {
+			assert!(parse_downstream_server_request_id(&RequestId::String(id.into())).is_none());
+		}
+	}
 }
