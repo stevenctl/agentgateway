@@ -1715,6 +1715,166 @@ async fn streamable_http_downstream_sse_frames_include_message_event() {
 	);
 }
 
+#[tokio::test]
+async fn multiplexed_pong_routes_to_pinging_upstream() {
+	// A stateful streamable upstream heartbeats with `ping` on the GET stream and
+	// the legacy downstream replies on POST (#2187). With two upstreams, the pong
+	// must reach the one that pinged, carrying its original request id.
+	use std::sync::{Arc, Mutex};
+
+	use futures_util::StreamExt;
+	use wiremock::matchers::method;
+	use wiremock::{Mock, Request, Respond, ResponseTemplate};
+
+	const INIT_FRAME: &str = concat!(
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{",
+		"\"protocolVersion\":\"2025-06-18\",",
+		"\"capabilities\":{\"tools\":{}},",
+		"\"serverInfo\":{\"name\":\"mock\",\"version\":\"0.0.1\"}",
+		"}}\n\n",
+	);
+
+	type Pongs = Arc<Mutex<Vec<serde_json::Value>>>;
+	struct UpstreamPost {
+		pongs: Pongs,
+	}
+	impl Respond for UpstreamPost {
+		fn respond(&self, req: &Request) -> ResponseTemplate {
+			let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+			if body["method"] == "initialize" {
+				return ResponseTemplate::new(200)
+					.insert_header("mcp-session-id", "upstream-session")
+					.set_body_raw(INIT_FRAME, "text/event-stream");
+			}
+			// Anything without a method is the client reply we are waiting for.
+			if body.get("method").is_none() {
+				self.pongs.lock().unwrap().push(body);
+			}
+			ResponseTemplate::new(202)
+		}
+	}
+
+	async fn upstream(ping: bool) -> (wiremock::MockServer, Pongs) {
+		let pongs = Pongs::default();
+		let server = wiremock::MockServer::start().await;
+		Mock::given(method("POST"))
+			.respond_with(UpstreamPost {
+				pongs: pongs.clone(),
+			})
+			.mount(&server)
+			.await;
+		let get_body = if ping {
+			"data: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n\n"
+		} else {
+			": keepalive\n\n"
+		};
+		Mock::given(method("GET"))
+			.respond_with(ResponseTemplate::new(200).set_body_raw(get_body, "text/event-stream"))
+			.mount(&server)
+			.await;
+		(server, pongs)
+	}
+
+	let (alpha, alpha_pongs) = upstream(true).await;
+	let (beta, beta_pongs) = upstream(false).await;
+
+	let t = setup_proxy_test("{}")
+		.unwrap()
+		.with_multiplex_mcp_backend(
+			"mcp",
+			vec![
+				("alpha", *alpha.address(), false),
+				("beta", *beta.address(), false),
+			],
+			true,
+		)
+		.with_bind(simple_bind())
+		.with_route(basic_named_route(strng::new("/mcp")));
+	let io = t.serve_real_listener(strng::new("bind")).await;
+	let client = reqwest::Client::new();
+	let url = format!("http://{io}/mcp");
+
+	let init_body = serde_json::json!({
+		"jsonrpc": "2.0",
+		"id": 1,
+		"method": "initialize",
+		"params": {
+			"protocolVersion": "2025-06-18",
+			"capabilities": {},
+			"clientInfo": {"name": "test-client", "version": "0.0.1"}
+		}
+	});
+	let init = mcp_json_post(&client, &url, &init_body)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(init.status(), reqwest::StatusCode::OK);
+	let session_id = init.headers()["mcp-session-id"]
+		.to_str()
+		.unwrap()
+		.to_string();
+	init.bytes().await.unwrap();
+
+	let initialized = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+	let ack = mcp_json_post(&client, &url, &initialized)
+		.header("mcp-session-id", session_id.clone())
+		.header("mcp-protocol-version", "2025-06-18")
+		.send()
+		.await
+		.unwrap();
+	assert!(ack.status().is_success());
+
+	let get = client
+		.get(&url)
+		.header(http::header::ACCEPT.as_str(), "text/event-stream")
+		.header("mcp-session-id", session_id.clone())
+		.header("mcp-protocol-version", "2025-06-18")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(get.status(), reqwest::StatusCode::OK);
+
+	// The forwarded ping's id is remapped by the proxy; echo back whatever we got.
+	let ping_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		let mut stream = get.bytes_stream();
+		let mut buf = String::new();
+		loop {
+			let chunk = stream
+				.next()
+				.await
+				.expect("GET stream ended without a ping")
+				.unwrap();
+			buf.push_str(std::str::from_utf8(&chunk).unwrap());
+			if let Some(id) = buf
+				.lines()
+				.filter_map(|l| l.strip_prefix("data: "))
+				.filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+				.find(|v| v["method"] == "ping")
+				.map(|v| v["id"].clone())
+			{
+				return id;
+			}
+		}
+	})
+	.await
+	.unwrap();
+
+	let pong_body = serde_json::json!({"jsonrpc": "2.0", "id": ping_id, "result": {}});
+	let pong = mcp_json_post(&client, &url, &pong_body)
+		.header("mcp-session-id", session_id)
+		.header("mcp-protocol-version", "2025-06-18")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(pong.status(), reqwest::StatusCode::ACCEPTED);
+
+	// The proxy forwards the pong before answering 202, so no waiting is needed.
+	let pongs = alpha_pongs.lock().unwrap();
+	assert_eq!(pongs.len(), 1, "pinging upstream should get the pong");
+	assert_eq!(pongs[0]["id"], 7, "pong must carry the original id");
+	assert!(beta_pongs.lock().unwrap().is_empty());
+}
+
 // Forwarded modern responses may come back as a single JSON object or as an SSE stream.
 // Validation-layer errors are always plain JSON.
 async fn read_response_message(response: reqwest::Response) -> serde_json::Value {
