@@ -1875,6 +1875,56 @@ async fn multiplexed_pong_routes_to_pinging_upstream() {
 	assert!(beta_pongs.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn elicitation_roundtrip_completes_tool_call() {
+	// Mid-tools/call the upstream elicits input from the client; the reply must
+	// route back so the tool call completes instead of hanging.
+	use rmcp::ServiceExt;
+	use rmcp::model::{
+		ClientCapabilities, ClientInfo, ElicitRequestParams, ElicitResult, ElicitationAction,
+		ElicitationCapability, Implementation, ProtocolVersion,
+	};
+	use rmcp::service::RequestContext;
+	use rmcp::transport::StreamableHttpClientTransport;
+
+	struct ElicitingClient;
+	impl rmcp::ClientHandler for ElicitingClient {
+		async fn create_elicitation(
+			&self,
+			_request: ElicitRequestParams,
+			_context: RequestContext<RoleClient>,
+		) -> Result<ElicitResult, rmcp::ErrorData> {
+			Ok(
+				ElicitResult::new(ElicitationAction::Accept)
+					.with_content(serde_json::json!({"confirm": "yes"})),
+			)
+		}
+		fn get_info(&self) -> ClientInfo {
+			let mut info = ClientInfo::new(
+				ClientCapabilities::builder().enable_elicitation().build(),
+				Implementation::new("test client".to_string(), "0.0.1".to_string()),
+			);
+			// Pre-SEP-2575 client: server-initiated requests are forwarded to it.
+			info.protocol_version = ProtocolVersion::V_2025_06_18;
+			info
+		}
+	}
+
+	let mock = mock_streamable_http_server(true).await;
+	let (_bind, io) = setup_proxy(&mock, true, false).await;
+	let transport =
+		StreamableHttpClientTransport::<reqwest::Client>::from_uri(format!("http://{io}/mcp"));
+	let client = ElicitingClient.serve(transport).await.unwrap();
+	let res = client
+		.call_tool(rmcp::model::CallToolRequestParams::new("elicit"))
+		.await
+		.unwrap();
+	assert_eq!(
+		&res.content[0].as_text().unwrap().text,
+		r#"{"confirm":"yes"}"#
+	);
+}
+
 // Forwarded modern responses may come back as a single JSON object or as an SSE stream.
 // Validation-layer errors are always plain JSON.
 async fn read_response_message(response: reqwest::Response) -> serde_json::Value {
@@ -4591,6 +4641,32 @@ mod mockserver {
 			let init_counter = self.init_counter.lock().await;
 			Ok(CallToolResult::success(vec![ContentBlock::text(
 				init_counter.to_string(),
+			)]))
+		}
+
+		#[tool(description = "Ask the client for confirmation before proceeding")]
+		async fn elicit(&self, rq: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+			// The typed create_elicitation helper is behind a disabled cargo feature;
+			// the generic peer request is equivalent on the wire.
+			let res = rq
+				.peer
+				.send_request(ServerRequest::ElicitRequest(ElicitRequest::new(
+					ElicitRequestParams::FormElicitationParams {
+						meta: None,
+						message: "confirm?".to_string(),
+						requested_schema: ElicitationSchema::new(Default::default()),
+					},
+				)))
+				.await
+				.map_err(|e| McpError::internal_error(e.to_string(), None))?;
+			let ClientResult::ElicitResult(res) = res else {
+				return Err(McpError::internal_error(
+					"unexpected elicitation reply",
+					None,
+				));
+			};
+			Ok(CallToolResult::success(vec![ContentBlock::text(
+				serde_json::to_string(&res.content).unwrap(),
 			)]))
 		}
 	}
