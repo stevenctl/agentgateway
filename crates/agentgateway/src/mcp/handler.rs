@@ -276,9 +276,9 @@ impl ResolveKind {
 	}
 }
 
-/// Parsed routing state for a downstream-facing server-initiated request id.
+/// Routing state recovered from a downstream-facing server-initiated request id.
 #[derive(Debug, Clone)]
-pub(crate) struct PendingServerRequest {
+pub(crate) struct ServerRequestRoute {
 	upstream: Strng,
 	original_id: RequestId,
 }
@@ -1423,9 +1423,9 @@ impl Relay {
 			_ => unreachable!(),
 		};
 
-		let pending = resolve_pending_server_request(self, &request_id)?;
-		let message = restore_client_response_id(message, pending.original_id)?;
-		let us = self.upstreams.get(pending.upstream.as_str())?;
+		let route = resolve_server_request_route(self, &request_id)?;
+		let message = restore_client_response_id(message, route.original_id)?;
+		let us = self.upstreams.get(route.upstream.as_str())?;
 		us.generic_client_message(message, &ctx).await?;
 		Ok(accepted_response())
 	}
@@ -1928,34 +1928,30 @@ fn downstream_server_request_id(upstream: &str, original: &RequestId) -> Request
 	}
 }
 
-fn parse_downstream_server_request_id(id: &RequestId) -> Option<PendingServerRequest> {
+fn parse_downstream_server_request_id(id: &RequestId) -> Option<ServerRequestRoute> {
 	let RequestId::String(encoded) = id else {
 		return None;
 	};
+	// Layout is `agw:{upstream}:{n|s}:{payload}`. The payload (digits or
+	// base64url) never contains `:`, so splitting from the right is unambiguous
+	// even if the upstream name contains colons.
 	let rest = encoded.as_ref().strip_prefix("agw:")?;
-	if let Some((upstream, n_str)) = rest.rsplit_once(":n:") {
-		let n: i64 = n_str.parse().ok()?;
-		return Some(PendingServerRequest {
-			upstream: upstream.into(),
-			original_id: RequestId::Number(n),
-		});
-	}
-	if let Some((upstream, payload)) = rest.split_once(":s:") {
-		let original = decode_downstream_string_request_id(payload)?;
-		return Some(PendingServerRequest {
-			upstream: upstream.into(),
-			original_id: RequestId::String(original.into()),
-		});
-	}
-	None
-}
-
-fn decode_downstream_string_request_id(payload: &str) -> Option<String> {
-	if let Ok(decoded) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) {
-		return String::from_utf8(decoded).ok();
-	}
-	// Legacy remapped ids stored the raw string after the first `:s:` delimiter.
-	Some(payload.to_string())
+	let (prefix, payload) = rest.rsplit_once(':')?;
+	let (upstream, tag) = prefix.rsplit_once(':')?;
+	let original_id = match tag {
+		"n" => RequestId::Number(payload.parse().ok()?),
+		"s" => {
+			let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+				.decode(payload)
+				.ok()?;
+			RequestId::String(String::from_utf8(decoded).ok()?.into())
+		},
+		_ => return None,
+	};
+	Some(ServerRequestRoute {
+		upstream: upstream.into(),
+		original_id,
+	})
 }
 
 /// Remap server-initiated requests only when the downstream client can reply
@@ -1982,12 +1978,12 @@ fn track_outbound_server_requests(upstream: Strng, stream: Messages) -> Messages
 	})
 }
 
-fn resolve_pending_server_request(
+fn resolve_server_request_route(
 	relay: &Relay,
 	request_id: &RequestId,
-) -> Result<PendingServerRequest, UpstreamError> {
-	if let Some(pending) = parse_downstream_server_request_id(request_id) {
-		return Ok(pending);
+) -> Result<ServerRequestRoute, UpstreamError> {
+	if let Some(route) = parse_downstream_server_request_id(request_id) {
+		return Ok(route);
 	}
 	if relay.upstreams.size() == 1 {
 		let name = relay
@@ -1996,7 +1992,7 @@ fn resolve_pending_server_request(
 			.next()
 			.map(|(name, _)| name)
 			.ok_or_else(|| UpstreamError::InvalidRequest("no upstreams available".into()))?;
-		return Ok(PendingServerRequest {
+		return Ok(ServerRequestRoute {
 			upstream: name,
 			original_id: request_id.clone(),
 		});
@@ -2358,5 +2354,25 @@ mod tests {
 		let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
 		assert_eq!(parsed.upstream.as_str(), upstream);
 		assert_eq!(parsed.original_id, original_id);
+	}
+
+	#[test]
+	fn parse_downstream_server_request_id_roundtrips_upstream_names_with_delimiters() {
+		// Upstream names come from config and are not validated against ':'.
+		let upstream = "team:n:backend";
+		for original_id in [RequestId::Number(7), RequestId::String("req:s:1".into())] {
+			let remapped = downstream_server_request_id(upstream, &original_id);
+			let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
+			assert_eq!(parsed.upstream.as_str(), upstream);
+			assert_eq!(parsed.original_id, original_id);
+		}
+	}
+
+	#[test]
+	fn parse_downstream_server_request_id_rejects_malformed_string_payload() {
+		// A payload that fails base64 decode must not route; falling back to the
+		// raw string would forward a corrupted id to the upstream.
+		let id = RequestId::String("agw:backend:s:not!base64".into());
+		assert!(parse_downstream_server_request_id(&id).is_none());
 	}
 }
