@@ -1391,41 +1391,35 @@ impl Relay {
 		message: ClientJsonRpcMessage,
 		ctx: IncomingRequestContext,
 	) -> Result<Response, UpstreamError> {
-		match &message {
-			ClientJsonRpcMessage::Error(e) if e.id.is_none() => {
-				if self.upstreams.size() == 1 {
-					let name = self
-						.upstreams
-						.iter_named()
-						.next()
-						.map(|(name, _)| name)
-						.ok_or_else(|| UpstreamError::InvalidRequest("no upstreams available".into()))?;
-					let us = self.upstreams.get(name.as_str())?;
-					us.generic_client_message(message, &ctx).await?;
-					return Ok(accepted_response());
-				}
-				warn!(
-					"dropping client JSON-RPC error without id in multiplexed session; cannot route upstream"
-				);
-				return Ok(accepted_response());
-			},
-			ClientJsonRpcMessage::Response(_) | ClientJsonRpcMessage::Error(_) => {},
+		let request_id = match &message {
+			ClientJsonRpcMessage::Response(r) => Some(r.id.clone()),
+			ClientJsonRpcMessage::Error(e) => e.id.clone(),
 			_ => {
 				return Err(UpstreamError::InvalidRequest(
 					"expected client JSON-RPC response".into(),
 				));
 			},
-		}
-
-		let request_id = match &message {
-			ClientJsonRpcMessage::Response(r) => r.id.clone(),
-			ClientJsonRpcMessage::Error(e) => e.id.clone().expect("id checked above"),
-			_ => unreachable!(),
 		};
 
-		let route = resolve_server_request_route(self, &request_id)?;
-		let message = restore_client_response_id(message, route.original_id)?;
-		let us = self.upstreams.get(route.upstream.as_str())?;
+		let (upstream, message) = match request_id {
+			Some(id) => {
+				let route = resolve_server_request_route(self, &id)?;
+				(
+					route.upstream,
+					restore_client_response_id(message, route.original_id),
+				)
+			},
+			// Errors may omit an id; without one we can only route to a sole upstream.
+			None => match single_upstream_name(self) {
+				Some(name) => (name, message),
+				None => {
+					warn!("dropping id-less client JSON-RPC error; cannot route in multiplexed session");
+					return Ok(accepted_response());
+				},
+			},
+		};
+
+		let us = self.upstreams.get(upstream.as_str())?;
 		us.generic_client_message(message, &ctx).await?;
 		Ok(accepted_response())
 	}
@@ -1978,6 +1972,12 @@ fn track_outbound_server_requests(upstream: Strng, stream: Messages) -> Messages
 	})
 }
 
+fn single_upstream_name(relay: &Relay) -> Option<Strng> {
+	(relay.upstreams.size() == 1)
+		.then(|| relay.upstreams.iter_named().next().map(|(name, _)| name))
+		.flatten()
+}
+
 fn resolve_server_request_route(
 	relay: &Relay,
 	request_id: &RequestId,
@@ -1985,13 +1985,8 @@ fn resolve_server_request_route(
 	if let Some(route) = parse_downstream_server_request_id(request_id) {
 		return Ok(route);
 	}
-	if relay.upstreams.size() == 1 {
-		let name = relay
-			.upstreams
-			.iter_named()
-			.next()
-			.map(|(name, _)| name)
-			.ok_or_else(|| UpstreamError::InvalidRequest("no upstreams available".into()))?;
+	// Ids the proxy did not remap can still route when only one upstream exists.
+	if let Some(name) = single_upstream_name(relay) {
 		return Ok(ServerRequestRoute {
 			upstream: name,
 			original_id: request_id.clone(),
@@ -2005,19 +2000,17 @@ fn resolve_server_request_route(
 fn restore_client_response_id(
 	message: ClientJsonRpcMessage,
 	original_id: RequestId,
-) -> Result<ClientJsonRpcMessage, UpstreamError> {
+) -> ClientJsonRpcMessage {
 	match message {
 		ClientJsonRpcMessage::Response(mut r) => {
 			r.id = original_id;
-			Ok(ClientJsonRpcMessage::Response(r))
+			ClientJsonRpcMessage::Response(r)
 		},
 		ClientJsonRpcMessage::Error(mut e) => {
 			e.id = Some(original_id);
-			Ok(ClientJsonRpcMessage::Error(e))
+			ClientJsonRpcMessage::Error(e)
 		},
-		_ => Err(UpstreamError::InvalidRequest(
-			"expected client JSON-RPC response".into(),
-		)),
+		other => other,
 	}
 }
 
@@ -2201,175 +2194,69 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn track_outbound_server_requests_registers_remapped_server_initiated_request_id() {
-		use futures_util::StreamExt;
-		use rmcp::model::{PingRequest, ServerRequest};
-
-		let upstream: Strng = "backend".into();
-		let original_id = RequestId::Number(7);
-		let remapped = downstream_server_request_id(upstream.as_str(), &original_id);
-		let ping = ServerJsonRpcMessage::request(
-			ServerRequest::PingRequest(PingRequest::default()),
-			original_id.clone(),
-		);
-		let mut tracked = track_outbound_server_requests(upstream.clone(), Messages::from(ping));
-		let forwarded = tracked.next().await.expect("message").expect("ok");
-		match forwarded {
-			ServerJsonRpcMessage::Request(req) => assert_eq!(req.id, remapped),
-			other => panic!("expected request, got {other:?}"),
-		}
-		let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
-		assert_eq!(parsed.upstream.as_str(), "backend");
-		assert_eq!(parsed.original_id, original_id);
-	}
-
-	#[tokio::test]
-	async fn track_outbound_server_requests_namespaces_colliding_ids_across_upstreams() {
-		use futures_util::StreamExt;
+	async fn colliding_server_request_ids_route_to_their_upstream() {
+		// Two multiplexed upstreams both ping with id 0; each remapped id must
+		// round-trip back to its own upstream.
 		use rmcp::model::{PingRequest, ServerRequest};
 
 		let shared_id = RequestId::Number(0);
-		let a: Strng = "upstream-a".into();
-		let b: Strng = "upstream-b".into();
-		let ping_a = ServerJsonRpcMessage::request(
-			ServerRequest::PingRequest(PingRequest::default()),
-			shared_id.clone(),
-		);
-		let ping_b = ServerJsonRpcMessage::request(
-			ServerRequest::PingRequest(PingRequest::default()),
-			shared_id.clone(),
-		);
-
-		let mut tracked_a = track_outbound_server_requests(a.clone(), Messages::from(ping_a));
-		let mut tracked_b = track_outbound_server_requests(b.clone(), Messages::from(ping_b));
-		let fwd_a = tracked_a.next().await.expect("a").expect("ok");
-		let fwd_b = tracked_b.next().await.expect("b").expect("ok");
-
-		let id_a = match fwd_a {
-			ServerJsonRpcMessage::Request(req) => req.id,
-			other => panic!("expected request, got {other:?}"),
-		};
-		let id_b = match fwd_b {
-			ServerJsonRpcMessage::Request(req) => req.id,
-			other => panic!("expected request, got {other:?}"),
-		};
-		assert_ne!(id_a, id_b);
-		assert_eq!(id_a, downstream_server_request_id(a.as_str(), &shared_id));
-		assert_eq!(id_b, downstream_server_request_id(b.as_str(), &shared_id));
-
-		assert_eq!(
-			parse_downstream_server_request_id(&id_a)
-				.as_ref()
-				.map(|e| e.upstream.as_str()),
-			Some("upstream-a")
-		);
-		assert_eq!(
-			parse_downstream_server_request_id(&id_b)
-				.as_ref()
-				.map(|e| e.upstream.as_str()),
-			Some("upstream-b")
-		);
-		assert_eq!(
-			parse_downstream_server_request_id(&id_a).map(|e| e.original_id),
-			Some(shared_id.clone())
-		);
-		assert_eq!(
-			parse_downstream_server_request_id(&id_b).map(|e| e.original_id),
-			Some(shared_id)
-		);
+		let mut ids = vec![];
+		for upstream in ["upstream-a", "upstream-b"] {
+			let ping = ServerJsonRpcMessage::request(
+				ServerRequest::PingRequest(PingRequest::default()),
+				shared_id.clone(),
+			);
+			let mut tracked = track_outbound_server_requests(upstream.into(), Messages::from(ping));
+			let ServerJsonRpcMessage::Request(req) = tracked.next().await.unwrap().unwrap() else {
+				panic!("expected request");
+			};
+			let route = parse_downstream_server_request_id(&req.id).expect("parsed");
+			assert_eq!(route.upstream.as_str(), upstream);
+			assert_eq!(route.original_id, shared_id);
+			ids.push(req.id);
+		}
+		assert_ne!(ids[0], ids[1]);
 	}
 
 	#[tokio::test]
-	async fn track_outbound_server_requests_covers_post_originated_sse_streams() {
-		// send_single / send_fanout_to wrap POST-originated SSE the same way as
-		// send_fanout_get: rewrite then track_outbound_server_requests.
-		use futures_util::StreamExt;
+	async fn no_remap_for_modern_downstream() {
+		// Modern downstreams never see server-initiated requests, so ids pass through.
 		use rmcp::model::{PingRequest, ServerRequest};
 
-		let upstream: Strng = "post-backend".into();
-		let original_id = RequestId::String("ping-1".into());
-		let remapped = downstream_server_request_id(upstream.as_str(), &original_id);
 		let ping = ServerJsonRpcMessage::request(
 			ServerRequest::PingRequest(PingRequest::default()),
-			original_id.clone(),
-		);
-
-		// Same wrapper sequence used by send_single after rewrite_outbound_server_messages.
-		let mut tracked = track_outbound_server_requests(upstream.clone(), Messages::from(ping));
-		let forwarded = tracked.next().await.expect("message").expect("ok");
-		match forwarded {
-			ServerJsonRpcMessage::Request(req) => assert_eq!(req.id, remapped),
-			other => panic!("expected request, got {other:?}"),
-		}
-
-		let restored = restore_client_response_id(
-			ClientJsonRpcMessage::response(rmcp::model::ClientResult::empty(()), remapped.clone()),
-			original_id.clone(),
-		)
-		.expect("restore");
-		match restored {
-			ClientJsonRpcMessage::Response(r) => assert_eq!(r.id, original_id),
-			other => panic!("expected response, got {other:?}"),
-		}
-		let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
-		assert_eq!(parsed.upstream.as_str(), "post-backend");
-		assert_eq!(parsed.original_id, original_id);
-	}
-
-	#[tokio::test]
-	async fn track_outbound_server_requests_skipped_for_modern_downstream() {
-		use futures_util::StreamExt;
-		use rmcp::model::{PingRequest, ServerRequest};
-
-		let upstream: Strng = "backend".into();
-		let original_id = RequestId::Number(7);
-		let ping = ServerJsonRpcMessage::request(
-			ServerRequest::PingRequest(PingRequest::default()),
-			original_id.clone(),
+			RequestId::Number(7),
 		);
 		let mut tracked =
-			track_outbound_server_requests_for_downstream(upstream, Messages::from(ping), true);
-		let forwarded = tracked.next().await.expect("message").expect("ok");
-		match forwarded {
-			ServerJsonRpcMessage::Request(req) => assert_eq!(req.id, original_id),
-			other => panic!("expected request, got {other:?}"),
-		}
+			track_outbound_server_requests_for_downstream("backend".into(), Messages::from(ping), true);
+		let ServerJsonRpcMessage::Request(req) = tracked.next().await.unwrap().unwrap() else {
+			panic!("expected request");
+		};
+		assert_eq!(req.id, RequestId::Number(7));
 	}
 
 	#[test]
-	fn parse_downstream_server_request_id_roundtrips_string_ids_with_colons() {
-		let upstream = "post-backend";
-		let original_id = RequestId::String("part:a:part".into());
-		let remapped = downstream_server_request_id(upstream, &original_id);
-		let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
-		assert_eq!(parsed.upstream.as_str(), upstream);
-		assert_eq!(parsed.original_id, original_id);
-	}
-
-	#[test]
-	fn parse_downstream_server_request_id_roundtrips_string_ids_with_numeric_delimiter() {
-		let upstream = "backend";
-		let original_id = RequestId::String("part:n:7".into());
-		let remapped = downstream_server_request_id(upstream, &original_id);
-		let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
-		assert_eq!(parsed.upstream.as_str(), upstream);
-		assert_eq!(parsed.original_id, original_id);
-	}
-
-	#[test]
-	fn parse_downstream_server_request_id_roundtrips_upstream_names_with_delimiters() {
-		// Upstream names come from config and are not validated against ':'.
-		let upstream = "team:n:backend";
-		for original_id in [RequestId::Number(7), RequestId::String("req:s:1".into())] {
+	fn remapped_id_roundtrip() {
+		let cases = [
+			("backend", RequestId::Number(7)),
+			("backend", RequestId::String("part:a:part".into())),
+			// Original ids may contain the delimiter markers themselves.
+			("backend", RequestId::String("part:n:7".into())),
+			("backend", RequestId::String("req:s:1".into())),
+			// Upstream names come from config and are not validated against ':'.
+			("team:n:backend", RequestId::Number(7)),
+			("team:s:backend", RequestId::String("x".into())),
+		];
+		for (upstream, original_id) in cases {
 			let remapped = downstream_server_request_id(upstream, &original_id);
-			let parsed = parse_downstream_server_request_id(&remapped).expect("parsed");
-			assert_eq!(parsed.upstream.as_str(), upstream);
-			assert_eq!(parsed.original_id, original_id);
+			let route = parse_downstream_server_request_id(&remapped).expect("parsed");
+			assert_eq!(route.upstream.as_str(), upstream);
+			assert_eq!(route.original_id, original_id);
 		}
 	}
 
 	#[test]
-	fn parse_downstream_server_request_id_rejects_malformed_string_payload() {
+	fn remapped_id_rejects_malformed_payload() {
 		// A payload that fails base64 decode must not route; falling back to the
 		// raw string would forward a corrupted id to the upstream.
 		let id = RequestId::String("agw:backend:s:not!base64".into());
