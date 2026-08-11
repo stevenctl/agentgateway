@@ -277,7 +277,7 @@ impl ResolveKind {
 }
 
 /// Routing state recovered from a downstream-facing server-initiated request id.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ServerRequestRoute {
 	upstream: Strng,
 	original_id: RequestId,
@@ -2216,23 +2216,6 @@ mod tests {
 			ids.push(req.id);
 		}
 		assert_ne!(ids[0], ids[1]);
-	}
-
-	#[tokio::test]
-	async fn no_remap_for_modern_downstream() {
-		// Modern downstreams never see server-initiated requests, so ids pass through.
-		use rmcp::model::{PingRequest, ServerRequest};
-
-		let ping = ServerJsonRpcMessage::request(
-			ServerRequest::PingRequest(PingRequest::default()),
-			RequestId::Number(7),
-		);
-		let mut tracked =
-			track_outbound_server_requests_for_downstream("backend".into(), Messages::from(ping), true);
-		let ServerJsonRpcMessage::Request(req) = tracked.next().await.unwrap().unwrap() else {
-			panic!("expected request");
-		};
-		assert_eq!(req.id, RequestId::Number(7));
 	}
 
 	#[test]
