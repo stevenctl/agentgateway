@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use agent_core::prelude::{AssertSize, Strng};
 use agent_core::version::BuildInfo;
-use base64::Engine;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use http::StatusCode;
@@ -1912,12 +1911,17 @@ fn accepted_response() -> Response {
 /// Upstream JSON-RPC ids are scoped per connection. Multiplexed backends can
 /// both emit id `0`; remapping keeps downstream ids collision-free and encodes
 /// the upstream name plus original id for the reverse path.
+///
+/// Layout is `agw_{upstream}_{n|s}_{original}` parsed left to right, keeping
+/// the original id readable as the raw tail. Target names cannot contain the
+/// DELIMITER — the same constraint prefixed resource naming already relies on.
 fn downstream_server_request_id(upstream: &str, original: &RequestId) -> RequestId {
 	match original {
-		RequestId::Number(n) => RequestId::String(format!("agw:{upstream}:n:{n}").into()),
+		RequestId::Number(n) => {
+			RequestId::String(format!("agw{DELIMITER}{upstream}{DELIMITER}n{DELIMITER}{n}").into())
+		},
 		RequestId::String(s) => {
-			let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes());
-			RequestId::String(format!("agw:{upstream}:s:{encoded}").into())
+			RequestId::String(format!("agw{DELIMITER}{upstream}{DELIMITER}s{DELIMITER}{s}").into())
 		},
 	}
 }
@@ -1926,20 +1930,15 @@ fn parse_downstream_server_request_id(id: &RequestId) -> Option<ServerRequestRou
 	let RequestId::String(encoded) = id else {
 		return None;
 	};
-	// Layout is `agw:{upstream}:{n|s}:{payload}`. The payload (digits or
-	// base64url) never contains `:`, so splitting from the right is unambiguous
-	// even if the upstream name contains colons.
-	let rest = encoded.as_ref().strip_prefix("agw:")?;
-	let (prefix, payload) = rest.rsplit_once(':')?;
-	let (upstream, tag) = prefix.rsplit_once(':')?;
+	let rest = encoded
+		.as_ref()
+		.strip_prefix("agw")?
+		.strip_prefix(DELIMITER)?;
+	let (upstream, rest) = rest.split_once(DELIMITER)?;
+	let (tag, payload) = rest.split_once(DELIMITER)?;
 	let original_id = match tag {
 		"n" => RequestId::Number(payload.parse().ok()?),
-		"s" => {
-			let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-				.decode(payload)
-				.ok()?;
-			RequestId::String(String::from_utf8(decoded).ok()?.into())
-		},
+		"s" => RequestId::String(payload.into()),
 		_ => return None,
 	};
 	Some(ServerRequestRoute {
@@ -2222,13 +2221,13 @@ mod tests {
 	fn remapped_id_roundtrip() {
 		let cases = [
 			("backend", RequestId::Number(7)),
-			("backend", RequestId::String("part:a:part".into())),
-			// Original ids may contain the delimiter markers themselves.
-			("backend", RequestId::String("part:n:7".into())),
-			("backend", RequestId::String("req:s:1".into())),
-			// Upstream names come from config and are not validated against ':'.
-			("team:n:backend", RequestId::Number(7)),
-			("team:s:backend", RequestId::String("x".into())),
+			("backend", RequestId::Number(-7)),
+			// The original id is the raw tail; delimiters and tag lookalikes in it are fine.
+			("backend", RequestId::String("part_n_7".into())),
+			("backend", RequestId::String("s_tail".into())),
+			("backend", RequestId::String("agw_x_n_1".into())),
+			("backend", RequestId::String("".into())),
+			("team:colons", RequestId::Number(7)),
 		];
 		for (upstream, original_id) in cases {
 			let remapped = downstream_server_request_id(upstream, &original_id);
@@ -2240,9 +2239,10 @@ mod tests {
 
 	#[test]
 	fn remapped_id_rejects_malformed_payload() {
-		// A payload that fails base64 decode must not route; falling back to the
-		// raw string would forward a corrupted id to the upstream.
-		let id = RequestId::String("agw:backend:s:not!base64".into());
-		assert!(parse_downstream_server_request_id(&id).is_none());
+		// An id in our namespace that does not parse must not route; guessing
+		// would forward a corrupted id to the upstream.
+		for id in ["agw_backend_x_7", "agw_backend_n_notanumber", "agw_backend"] {
+			assert!(parse_downstream_server_request_id(&RequestId::String(id.into())).is_none());
+		}
 	}
 }
