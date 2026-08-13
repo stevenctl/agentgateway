@@ -3926,6 +3926,7 @@ mod tests {
 	fn backend_ai_policy_merge_preserves_routes_and_prompt_guard() {
 		use crate::llm::policy::{
 			PromptGuard, RegexRule, RegexRules, RequestGuard, RequestGuardKind, SortedRoutes,
+			default_content_scope,
 		};
 		use crate::llm::{self, RouteType};
 
@@ -3942,6 +3943,7 @@ mod tests {
 				streaming: Default::default(),
 				request: vec![RequestGuard {
 					rejection: Default::default(),
+					scope: default_content_scope(),
 					kind: RequestGuardKind::Regex(RegexRules {
 						action: Default::default(),
 						rules: vec![RegexRule::Regex {
@@ -3978,7 +3980,7 @@ mod tests {
 	fn llm_config_merges() {
 		use crate::llm::policy::{
 			PromptEnrichment, PromptGuard, RegexRule, RegexRules, RequestGuard, RequestGuardKind,
-			SortedRoutes,
+			SortedRoutes, default_content_scope,
 		};
 		use crate::llm::{self, RouteType, SimpleChatCompletionMessage};
 
@@ -3989,6 +3991,7 @@ mod tests {
 					streaming: Default::default(),
 					request: vec![RequestGuard {
 						rejection: Default::default(),
+						scope: default_content_scope(),
 						kind: RequestGuardKind::Regex(RegexRules {
 							action: Default::default(),
 							rules: vec![RegexRule::Regex {

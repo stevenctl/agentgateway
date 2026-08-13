@@ -1631,6 +1631,7 @@
 |`binds[].listeners[].routes[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`binds[].listeners[].routes[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`binds[].listeners[].routes[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`binds[].listeners[].routes[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`binds[].listeners[].routes[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`binds[].listeners[].routes[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`binds[].listeners[].routes[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -7753,6 +7754,7 @@
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`binds[].listeners[].routes[].backends[].ai.policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -11066,6 +11068,7 @@
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -14342,6 +14345,7 @@
 |`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`binds[].listeners[].routes[].backends[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -19196,6 +19200,7 @@
 |`policies[].policy.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`policies[].policy.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`policies[].policy.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`policies[].policy.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`policies[].policy.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`policies[].policy.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`policies[].policy.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -25314,6 +25319,7 @@
 |`backends[].ai.policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`backends[].ai.policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`backends[].ai.policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`backends[].ai.policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`backends[].ai.policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`backends[].ai.policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`backends[].ai.policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -28627,6 +28633,7 @@
 |`backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`backends[].ai.groups[].providers[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -31901,6 +31908,7 @@
 |`backends[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`backends[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`backends[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`backends[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`backends[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`backends[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`backends[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -34278,6 +34286,7 @@
 |`routeGroups[].routes[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routeGroups[].routes[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routeGroups[].routes[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routeGroups[].routes[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routeGroups[].routes[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routeGroups[].routes[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routeGroups[].routes[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -40400,6 +40409,7 @@
 |`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routeGroups[].routes[].backends[].ai.policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -43713,6 +43723,7 @@
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -46989,6 +47000,7 @@
 |`routeGroups[].routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routeGroups[].routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routeGroups[].routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routeGroups[].routes[].backends[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routeGroups[].routes[].backends[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routeGroups[].routes[].backends[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routeGroups[].routes[].backends[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -51944,6 +51956,7 @@
 |`routes[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routes[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routes[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routes[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routes[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routes[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routes[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -58066,6 +58079,7 @@
 |`routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routes[].backends[].ai.policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routes[].backends[].ai.policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routes[].backends[].ai.policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routes[].backends[].ai.policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routes[].backends[].ai.policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -61379,6 +61393,7 @@
 |`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routes[].backends[].ai.groups[].providers[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -64655,6 +64670,7 @@
 |`routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`routes[].backends[].policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`routes[].backends[].policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`routes[].backends[].policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`routes[].backends[].policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`routes[].backends[].policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -68355,6 +68371,7 @@
 |`llm.models[].guardrails.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`llm.models[].guardrails.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`llm.models[].guardrails.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`llm.models[].guardrails.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`llm.models[].guardrails.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`llm.models[].guardrails.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`llm.models[].guardrails.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -71619,6 +71636,7 @@
 |`llm.policies.guardrails.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`llm.policies.guardrails.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`llm.policies.guardrails.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`llm.policies.guardrails.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`llm.policies.guardrails.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`llm.policies.guardrails.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`llm.policies.guardrails.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
@@ -74545,6 +74563,7 @@
 |`mcp.policies.ai.promptGuard.request[].rejection.headers.add`|object|Headers to append without replacing existing values.|
 |`mcp.policies.ai.promptGuard.request[].rejection.headers.set`|object|Headers to set, replacing any existing values.|
 |`mcp.policies.ai.promptGuard.request[].rejection.headers.remove`|[]string|Header names to remove.|
+|`mcp.policies.ai.promptGuard.request[].scope`|[]enum|Which parts of the request this guard inspects.<br>Possible values: `systemPrompt`, `messages`, `toolOutput`, `toolInput`.|
 |`mcp.policies.ai.promptGuard.response`|[]object|Guards applied to LLM responses before they reach the client.|
 |`mcp.policies.ai.promptGuard.response[].regex`|object|Apply regex-based masking or rejection rules.|
 |`mcp.policies.ai.promptGuard.response[].regex.action`|enum|Action to take when a regex rule matches.<br>Possible values: `mask`, `reject`.|
