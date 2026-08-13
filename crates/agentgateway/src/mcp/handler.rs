@@ -1017,6 +1017,9 @@ impl Relay {
 		target_names: Option<Vec<String>>,
 		request_for_target: impl Fn(&str, &JsonRpcRequest<ClientRequest>) -> JsonRpcRequest<ClientRequest>,
 	) -> Result<(Vec<(Strng, Messages)>, Option<Vec<String>>), UpstreamError> {
+		// A discovery rejection means "legacy protocol", not "upstream unavailable".
+		// Surface it even in FailOpen so probe clients can fall back to initialize.
+		let fail_on_discovery_rejection = matches!(&r.request, ClientRequest::DiscoverRequest(_));
 		let selected_upstreams = self
 			.upstreams
 			.iter_named()
@@ -1077,6 +1080,29 @@ impl Relay {
 			match result {
 				Ok(s) => streams.push((name, s)),
 				Err(e) => {
+					let discovery_rejection = fail_on_discovery_rejection
+						&& match &e {
+							UpstreamError::InvalidMethod(_) => true,
+							UpstreamError::Http(ClientError::Status(response)) => matches!(
+								response.status(),
+								StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+							),
+							_ => false,
+						};
+					if discovery_rejection {
+						streams.push((
+							name,
+							Messages::from(ServerJsonRpcMessage::error(
+								ErrorData::new(
+									rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+									r.request.method().to_string(),
+									None,
+								),
+								Some(r.id.clone()),
+							)),
+						));
+						continue;
+					}
 					// FailOpen skips pre-stream failures. FailClosed fails before any frame streams.
 					if self.upstreams.failure_mode == FailureMode::FailOpen {
 						warn!("upstream '{}' failed during fanout, skipping: {}", name, e);
@@ -1354,6 +1380,8 @@ impl Relay {
 		target_names: Option<Vec<String>>,
 	) -> Result<Response, UpstreamError> {
 		let id = r.id.clone();
+		// Preserve discovery errors through the merge for protocol fallback.
+		let fail_on_discovery_rejection = matches!(&r.request, ClientRequest::DiscoverRequest(_));
 		let (streams, service_names) = self
 			.fanout_open_streams(&r, &mut ctx, target_names, |_, r| r.clone())
 			.await?;
@@ -1372,8 +1400,14 @@ impl Relay {
 			})
 			.collect::<Vec<_>>();
 
-		let ms =
-			mergestream::MergeStream::new(streams, id.clone(), merge, cel, self.upstreams.failure_mode);
+		let ms = mergestream::MergeStream::new(
+			streams,
+			id.clone(),
+			merge,
+			cel,
+			self.upstreams.failure_mode,
+			fail_on_discovery_rejection,
+		);
 
 		// Response-phase hook runs once on the merged (muxed) result.
 		respond_with_guardrails(

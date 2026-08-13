@@ -127,29 +127,31 @@ impl Debug for Jwt {
 	}
 }
 
-#[apply(schema_de!)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[cfg_attr(
+	feature = "schema",
+	schemars(untagged, deny_unknown_fields, rename_all_fields = "camelCase")
+)]
 pub enum LocalJwtConfig {
 	/// Validate JWTs against one or more trusted token issuers.
-	#[serde(rename_all = "camelCase")]
 	Multi {
 		/// Controls whether requests must include a JWT and how validation failures are handled.
-		#[serde(default)]
+		#[cfg_attr(feature = "schema", schemars(default))]
 		mode: Mode,
 		/// Where to read the JWT from in incoming requests.
-		#[serde(default)]
+		#[cfg_attr(feature = "schema", schemars(default))]
 		location: AuthorizationLocation,
 		/// Trusted issuers and their signing keys.
 		providers: Vec<ProviderConfig>,
 	},
 	/// Validate JWTs against a single trusted token issuer.
-	#[serde(rename_all = "camelCase")]
 	Single {
 		/// Controls whether requests must include a JWT and how validation failures are handled.
-		#[serde(default)]
+		#[cfg_attr(feature = "schema", schemars(default))]
 		mode: Mode,
 		/// Where to read the JWT from in incoming requests.
-		#[serde(default)]
+		#[cfg_attr(feature = "schema", schemars(default))]
 		location: AuthorizationLocation,
 		/// Expected token issuer, matched against the JWT `iss` claim.
 		issuer: String,
@@ -158,9 +160,62 @@ pub enum LocalJwtConfig {
 		/// JSON Web Key Set used to verify token signatures. Can be inline, from a file, or fetched remotely.
 		jwks: serdes::FileInlineOrRemote,
 		/// Claim requirements to enforce after the token signature is verified.
-		#[serde(default)]
+		#[cfg_attr(feature = "schema", schemars(default))]
 		jwt_validation_options: JWTValidationOptions,
 	},
+}
+
+#[apply(schema_de!)]
+struct LocalJwtMultiConfig {
+	#[serde(default)]
+	mode: Mode,
+	#[serde(default)]
+	location: AuthorizationLocation,
+	providers: Vec<ProviderConfig>,
+}
+
+#[apply(schema_de!)]
+struct LocalJwtSingleConfig {
+	#[serde(default)]
+	mode: Mode,
+	#[serde(default)]
+	location: AuthorizationLocation,
+	issuer: String,
+	audiences: Option<Vec<String>>,
+	jwks: serdes::FileInlineOrRemote,
+	#[serde(default)]
+	jwt_validation_options: JWTValidationOptions,
+}
+
+// Select the configuration shape before deserializing it so serde does not discard the
+// actionable error from each arm of an untagged enum.
+impl<'de> Deserialize<'de> for LocalJwtConfig {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		let value = Value::deserialize(deserializer)?;
+		if value.get("providers").is_some() {
+			let config: LocalJwtMultiConfig =
+				serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+			Ok(Self::Multi {
+				mode: config.mode,
+				location: config.location,
+				providers: config.providers,
+			})
+		} else {
+			let config: LocalJwtSingleConfig =
+				serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+			Ok(Self::Single {
+				mode: config.mode,
+				location: config.location,
+				issuer: config.issuer,
+				audiences: config.audiences,
+				jwks: config.jwks,
+				jwt_validation_options: config.jwt_validation_options,
+			})
+		}
+	}
 }
 
 #[apply(schema_de!)]

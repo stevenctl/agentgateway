@@ -704,6 +704,11 @@
           "description": "Read a file baseline and store UI-managed overlay resources in the configured database.",
           "type": "string",
           "const": "hybrid"
+        },
+        {
+          "description": "Disallow write operations to the config from the UI",
+          "type": "string",
+          "const": "readOnly"
         }
       ]
     },
@@ -9151,6 +9156,18 @@
           "anyOf": [
             {
               "$ref": "#/$defs/NetworkAuthorization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "networkExtAuthz": {
+          "description": "HTTP external authorization performed once for each downstream network connection.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtAuthz"
             },
             {
               "type": "null"

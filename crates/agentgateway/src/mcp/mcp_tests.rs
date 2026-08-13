@@ -956,14 +956,22 @@ async fn stateless_vnext_tools_list_reaches_upstream() {
 
 #[tokio::test]
 async fn modern_client_multiplex_mixed_servers_falls_back_to_legacy_initialize() {
-	let old = mock_streamable_http_server_without_discover().await;
+	let down = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let down_addr = down.local_addr().unwrap();
+	drop(down);
+	let old = mock_streamable_http_server_rejecting_discover().await;
 	let new = mock_modern_streamable_http_server().await;
 	let t = setup_proxy_test("{}")
 		.unwrap()
-		.with_multiplex_mcp_backend(
+		.with_multiplex_mcp_backend_failure_mode(
 			"mcp",
-			vec![("old", old.addr, false), ("new", new.addr, false)],
+			vec![
+				("down", down_addr, false),
+				("old", old.addr, false),
+				("new", new.addr, false),
+			],
 			true,
+			FailureMode::FailOpen,
 		)
 		.with_bind(simple_bind())
 		.with_route(basic_named_route(strng::new("/mcp")));
@@ -994,11 +1002,8 @@ async fn modern_client_multiplex_mixed_servers_falls_back_to_legacy_initialize()
 		discover.headers().get("mcp-session-id").is_none(),
 		"modern discover must not create a legacy session"
 	);
-	let discover_body = discover.text().await.unwrap();
-	assert!(
-		discover_body.contains("server/discover") || discover_body.contains("method"),
-		"mixed old/new discover should surface an error that lets the client fall back, got {discover_body}"
-	);
+	let discover_body = read_response_message(discover).await;
+	assert_eq!(discover_body["error"]["code"], -32601, "{discover_body}");
 
 	let init = serde_json::json!({
 		"jsonrpc": "2.0",
@@ -3796,17 +3801,22 @@ async fn mock_modern_streamable_http_server() -> MockServer {
 }
 
 async fn mock_streamable_http_server_without_discover() -> MockServer {
-	mock_streamable_http_server_with_discover_versions(None).await
+	mock_streamable_http_server_with_discover_versions(None, false).await
+}
+
+async fn mock_streamable_http_server_rejecting_discover() -> MockServer {
+	mock_streamable_http_server_with_discover_versions(None, true).await
 }
 
 // Variant of `mock_modern_streamable_http_server` for tests that need custom upstream
 // `server/discover` versions.
 async fn mock_modern_streamable_http_server_with_versions(versions: &[&str]) -> MockServer {
-	mock_streamable_http_server_with_discover_versions(Some(versions)).await
+	mock_streamable_http_server_with_discover_versions(Some(versions), false).await
 }
 
 async fn mock_streamable_http_server_with_discover_versions(
 	versions: Option<&[&str]>,
+	reject_discover: bool,
 ) -> MockServer {
 	agent_core::telemetry::testing::setup_test_logging();
 	let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3828,15 +3838,18 @@ async fn mock_streamable_http_server_with_discover_versions(
 				let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 				let result = match method {
 					"server/discover" => {
+						if reject_discover {
+							return Err(http::StatusCode::BAD_REQUEST);
+						}
 						let Some(versions) = versions else {
-							return axum::Json(serde_json::json!({
+							return Ok(axum::Json(serde_json::json!({
 								"jsonrpc": "2.0",
 								"id": id,
 								"error": {
 									"code": -32601,
 									"message": method
 								}
-							}));
+							})));
 						};
 						serde_json::json!({
 							"resultType": "complete",
@@ -3876,21 +3889,21 @@ async fn mock_streamable_http_server_with_discover_versions(
 						}]
 					}),
 					_ => {
-						return axum::Json(serde_json::json!({
-							"jsonrpc": "2.0",
-							"id": id,
-							"error": {
-								"code": -32601,
-								"message": method
-							}
-						}));
+						return Ok(axum::Json(serde_json::json!({
+								"jsonrpc": "2.0",
+								"id": id,
+								"error": {
+									"code": -32601,
+									"message": method
+								}
+						})));
 					},
 				};
-				axum::Json(serde_json::json!({
+				Ok(axum::Json(serde_json::json!({
 					"jsonrpc": "2.0",
 					"id": id,
 					"result": result
-				}))
+				})))
 			}
 		}),
 	);
@@ -5870,6 +5883,7 @@ async fn test_runtime_fanout_fail_open() {
 		merge,
 		empty_cel(),
 		FailureMode::FailOpen,
+		false,
 	);
 
 	let res = ms.next().await;
@@ -5917,6 +5931,7 @@ async fn test_runtime_fanout_fail_open_skips_jsonrpc_error_frames() {
 		merge,
 		empty_cel(),
 		FailureMode::FailOpen,
+		false,
 	);
 
 	let res = ms.next().await;
@@ -5951,6 +5966,7 @@ async fn test_runtime_fanout_fail_open_all_fail() {
 		merge,
 		empty_cel(),
 		FailureMode::FailOpen,
+		false,
 	);
 
 	let res = ms.next().await;

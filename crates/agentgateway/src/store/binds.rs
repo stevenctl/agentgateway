@@ -145,6 +145,7 @@ pub struct FrontendPolices {
 	pub tls: Option<frontend::TLS>,
 	pub tcp: Option<frontend::TCP>,
 	pub network_authorization: Option<NetworkAuthorizationSet>,
+	pub network_ext_authz: Option<Arc<ext_authz::ExtAuthz>>,
 	pub proxy: Option<frontend::Proxy>,
 	pub connect: Option<frontend::Connect>,
 	pub access_log: Option<frontend::LoggingPolicy>,
@@ -171,6 +172,9 @@ impl FrontendPolices {
 				} else {
 					self.network_authorization = Some(NetworkAuthorizationSet::new(vec![p.0.clone()].into()));
 				}
+			},
+			FrontendPolicy::NetworkExtAuthz(p) => {
+				self.network_ext_authz.get_or_insert_with(|| p.clone());
 			},
 			FrontendPolicy::Proxy(p) => {
 				self.proxy.get_or_insert_with(|| p.clone());

@@ -36,7 +36,7 @@
 |`config.database.url`|string|Connection URL for the request log database. A postgres:// or postgresql:// URL uses Postgres; any other value is treated as a SQLite database.|
 |`config.database.maxConnections`|integer|Maximum number of connections to open in this database's connection pool. Defaults to 5.<br>When the request log and config stores have matching database settings, they share one pool<br>with this limit.|
 |`config.storage`|object|Controls whether UI-managed configuration is written to the config file or a DB overlay.|
-|`config.storage.mode`|enum|Possible values: `file`, `hybrid`.|
+|`config.storage.mode`|enum|Possible values: `file`, `hybrid`, `readOnly`.|
 |`config.caAddress`|string|Address of the Certificate Authority used to issue SPIFFE certificates.|
 |`config.caAuthToken`|string|Authentication token for communicating with the Certificate Authority.|
 |`config.xdsAddress`|string|Address of the xDS control plane used for dynamic configuration.|
@@ -16820,6 +16820,301 @@
 |`frontendPolicies.networkAuthorization.rules[].allow`|string|Allow the request when this CEL expression is true.|
 |`frontendPolicies.networkAuthorization.rules[].deny`|string|Deny the request when this CEL expression is true. This mode is not<br>recommended because expression failures fail to deny; prefer `Allow` or<br>`Require`. If used, design expressions defensively against evaluation errors.|
 |`frontendPolicies.networkAuthorization.rules[].require`|string|Require this CEL expression to be true.|
+|`frontendPolicies.networkExtAuthz`|object|HTTP external authorization performed once for each downstream network connection.|
+|`frontendPolicies.networkExtAuthz.service`|object|Service reference. Service must be defined in the top level services list.|
+|`frontendPolicies.networkExtAuthz.service.name`|string|Name of the target Service, as defined in the top-level `services` list.|
+|`frontendPolicies.networkExtAuthz.service.port`|integer|Port on the target Service to route to.|
+|`frontendPolicies.networkExtAuthz.host`|string|Hostname or IP address|
+|`frontendPolicies.networkExtAuthz.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
+|`frontendPolicies.networkExtAuthz.policies`|object|Backend policies used when connecting to the service.|
+|`frontendPolicies.networkExtAuthz.policies.requestHeaderModifier`|object|Modify request headers before forwarding to this backend.|
+|`frontendPolicies.networkExtAuthz.policies.requestHeaderModifier.add`|object|Headers to append without replacing existing values.|
+|`frontendPolicies.networkExtAuthz.policies.requestHeaderModifier.set`|object|Headers to set, replacing any existing values.|
+|`frontendPolicies.networkExtAuthz.policies.requestHeaderModifier.remove`|[]string|Header names to remove.|
+|`frontendPolicies.networkExtAuthz.policies.transformations`|object|Modify request and response data for this backend.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request`|object|Transform the request before it is forwarded.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request.add`|object|Headers to append using CEL expressions for values.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request.set`|object|Headers to set using CEL expressions for values.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request.remove`|[]string|Header names to remove.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request.replace`|string|CEL expression that computes the full set of headers, replacing all existing headers.<br>The expression must evaluate to a map of header name to value (a string, or a list of<br>strings for a repeated header). Pseudo-headers (`:method`, `:path`, etc.) are ignored;<br>set those explicitly with `set`/`add`. `replace` is applied before `add`/`set`/`remove`,<br>so those still operate on top of the replaced headers.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request.body`|string|CEL expression that computes a replacement body.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.request.metadata`|object|Metadata values to add using CEL expressions.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response`|object|Transform the response before it is returned.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response.add`|object|Headers to append using CEL expressions for values.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response.set`|object|Headers to set using CEL expressions for values.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response.remove`|[]string|Header names to remove.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response.replace`|string|CEL expression that computes the full set of headers, replacing all existing headers.<br>The expression must evaluate to a map of header name to value (a string, or a list of<br>strings for a repeated header). Pseudo-headers (`:method`, `:path`, etc.) are ignored;<br>set those explicitly with `set`/`add`. `replace` is applied before `add`/`set`/`remove`,<br>so those still operate on top of the replaced headers.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response.body`|string|CEL expression that computes a replacement body.|
+|`frontendPolicies.networkExtAuthz.policies.transformations.response.metadata`|object|Metadata values to add using CEL expressions.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS`|object|TLS settings used when connecting to this backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.cert`|string|Client certificate file to present to the backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.key`|string|Private key file for the client certificate.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.root`|string|Root certificate bundle used to verify the backend certificate.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.hostname`|string|Server name to use for TLS verification and SNI.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.insecure`|boolean|Skip certificate trust verification for the backend connection.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.insecureHost`|boolean|Skip hostname verification for the backend certificate.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.alpn`|[]string|ALPN protocols to offer to the backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.subjectAltNames`|[]string|Additional subject alternative names accepted for the backend certificate.|
+|`frontendPolicies.networkExtAuthz.policies.backendTLS.keyExchangeGroups`|[]enum|Key exchange groups allowed for negotiating TLS.<br>Possible values: `X25519`, `P-256`, `P-384`, `X25519_MLKEM768`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth`|object|Authentication credentials sent to this backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough`|object|Forward the validated incoming JWT to the backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location`|object|Where to place the forwarded credential in the backend request.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.passthrough.location.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key`|object|Send a configured secret value to the backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.value`|object|Secret value to send to the backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.value.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location`|object|Where to place the secret in the backend request.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.key.location.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.gcp`|object|Authenticate to Google Cloud services.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.gcp.type`|enum|Possible values: `idToken`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.gcp.audience`|string|Audience for the token. If not set, the destination host will be used.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.gcp.credential`|object|ADC-compatible Google credential JSON. If not set, ambient credentials are used.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.gcp.credential.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.gcp.type`|enum|Possible values: `accessToken`, `null`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws`|object|Sign backend requests with AWS credentials.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.accessKeyId`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.secretAccessKey`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.region`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.sessionToken`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.serviceName`|string|AWS SigV4 signing service name (for example, "bedrock", "bedrock-agentcore", or "execute-api").|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.region`|string|AWS SigV4 signing region (for example, "us-east-1"). If unset, typed AWS<br>backends may provide this automatically; otherwise the ambient AWS region<br>is used.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole`|object|Optional AWS STS role to assume before signing requests.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.roleArn`|string|AWS IAM role ARN to assume.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.sessionName`|string|Custom session name (RoleSessionName) for CloudTrail and Cost & Usage Report<br>attribution. Either a static string or `{expression: ...}` with a CEL<br>expression evaluated against each request. Max 64 chars, matching<br>`[\w+=,.@-]`. If unset, the AWS SDK generates a random session name.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.sessionName.expression`|string|CEL expression evaluated against each request to produce the session<br>name, for example `jwt.sub` or `request.headers["x-team"]`. If the<br>expression does not produce a valid session name at request time, the<br>request is rejected.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.tags`|[]object|Session tags passed to STS AssumeRole for cost attribution. Once activated as<br>cost allocation tags, each tag surfaces in the AWS Cost & Usage Report under<br>`resourceTags/user:TagKey`. A tag value is either static (`value`) or a CEL<br>expression evaluated against each request (`expression`).|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.tags[].key`|string|Tag key.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.tags[].value`|string|Static tag value.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.aws.assumeRole.tags[].expression`|string|CEL expression evaluated against each request to produce the tag value, for<br>example `jwt.sub` or `request.headers["x-app"]`. If the expression does not<br>produce a valid tag value at request time, the request is rejected.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure`|object|Authenticate to Azure services.<br>Exactly one of explicitConfig, developerImplicit, or implicit may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig`|object|Use explicit Azure credentials<br>Exactly one of clientSecret, managedIdentity, or workloadIdentity may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.clientSecret`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.clientSecret.tenant_id`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.clientSecret.client_id`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.clientSecret.client_secret`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.managedIdentity`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.managedIdentity.userAssignedIdentity`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.managedIdentity.userAssignedIdentity.clientId`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.managedIdentity.userAssignedIdentity.objectId`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.managedIdentity.userAssignedIdentity.resourceId`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.explicitConfig.workloadIdentity`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.developerImplicit`|object|Use implicit Azure auth. Note that this is for developer use-cases only!|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.azure.implicit`|object|Automatically detect authentication method based on environment.<br>Uses Workload Identity on K8s, Managed Identity on Azure VMs, or Developer Tools locally.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign`|object|Sign a short-lived JWT with a private key on each request.<br>Signs a short-lived JWT with a private key on each request and sends it to<br>the backend. For upstreams that require per-request keypair JWTs (e.g. the<br>Snowflake SQL API) rather than a static credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.signingKey`|object|PEM-encoded private signing key (RSA or EC, matching `alg`).|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.signingKey.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.alg`|enum|JWS signing algorithm. Defaults to RS256.<br>Possible values: `RS256`, `RS384`, `RS512`, `PS256`, `ES256`, `ES384`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.kid`|string|Optional JWS key ID header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.claims`|object|Static claims added to every token (e.g. iss, sub, aud). Values may be<br>any JSON value (e.g. a string, number, bool, or array). `iat`, `exp`,<br>and `nbf` are reserved for the signer and cannot be configured here.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.ttl`|string|Token lifetime used for `exp`. Defaults to 300s.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location`|object|Where the signed token is written. Defaults to the Authorization<br>header with a `Bearer ` prefix.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.jwtSign.location.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange`|object|Use OAuth token exchange flows to obtain a backend access token.<br>Exactly one of service, host, or backend may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.service`|object|Service reference. Service must be defined in the top level services list.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.service.name`|string|Name of the target Service, as defined in the top-level `services` list.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.service.port`|integer|Port on the target Service to route to.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.host`|string|Hostname or IP address|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.policies`|any|Backend policies used when connecting to the service.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.path`|string|Token endpoint path on the backend; defaults to "/".|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.grantType`|enum|Selects which RFC the request follows; defaults to token exchange (RFC 8693).<br>Possible values: `tokenExchange`, `jwtBearer`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken`|object|Where the subject token is read from, and its token type. Defaults to the<br>Authorization Bearer header with token type access_token.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source`|object|Where the token is read from in the incoming request. The CEL `expression`<br>source is permitted (extraction only).<br>Exactly one of header, queryParameter, cookie, or expression may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.source.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.subjectToken.tokenType`|string|RFC 8693 token type URN; when omitted defaults to access_token|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken`|object|RFC 8693 delegation actor token. Token-exchange grant only.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source`|object|Where the actor token is read from in the incoming request. The CEL<br>`expression` source is permitted (extraction only). Unlike subject tokens,<br>actor tokens have no default source.<br>Exactly one of header, queryParameter, cookie, or expression may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.source.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.tokenType`|string|RFC 8693 actor token type URN; when omitted defaults to access_token and is still sent|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.actorToken.enforceMayAct`|boolean|Enforce that the subject's `may_act` claim authorizes the actor before exchanging.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.audiences`|[]string|`audience` parameters naming the target services at the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.scopes`|[]string|`scope` values for the requested token, sent space-delimited.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.resources`|[]string|`resource` parameters with the target service URIs.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.requestedTokenType`|string|`requested_token_type` parameter. When unset it is omitted from the request<br>(RFC 8693 makes it optional). Some providers (e.g. Auth0 custom token exchange)<br>reject an explicit access_token value paired with a custom `subject_token_type`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth`|object|Client authentication used when calling the token endpoint.<br>When unset, no client authentication fields are sent.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.clientId`|string|`client_id` parameter identifying the gateway at the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.clientSecret`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.clientSecret.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.method`|enum|Possible values: `clientSecretBasic`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.method`|enum|Possible values: `clientSecretPost`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.signingKey`|object|PEM-encoded private signing key (RSA or EC, matching `alg`).|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.signingKey.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.certificate`|object|PEM-encoded X.509 certificate chain, leaf first. The leaf public key must<br>correspond to `signing_key` for token endpoints to validate assertions.<br>A mismatch or comparison failure is logged and does not prevent loading.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.certificate.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.certificateHeader`|enum|JWS certificate header emitted from `certificate`. Required when `certificate` is set.<br>Possible values: `x5c`, `x5t#S256`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.alg`|enum|Possible values: `RS256`, `RS384`, `RS512`, `PS256`, `ES256`, `ES384`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.kid`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.assertionAudience`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.method`|enum|Possible values: `privateKeyJwt`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.clientAuth.clientSecret`|object|OAuth 2.0 client secret sent via HTTP Basic auth to the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.additionalParams`|object|Extra form parameters appended to the token request.<br>Values are CEL expressions evaluated against the incoming request.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation`|object|Where to place the exchanged token in the backend request. Defaults to the<br>Authorization header with a "Bearer " prefix. The CEL `expression` source is<br>not valid here (it cannot insert).<br>Exactly one of header, queryParameter, cookie, or expression may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.authorizationLocation.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.cache`|object|Response cache configuration. Defaults to an in-memory cache with 8192 entries and a 300s<br>TTL when the token endpoint omits `expires_in`. Set `maxEntries` to 0 to disable.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.cache.maxEntries`|integer|Maximum number of token exchange responses to keep in the cache. Set to 0 to disable.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.oauthTokenExchange.cache.defaultTtl`|string|TTL used when the token endpoint omits `expires_in`. Defaults to 300s.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess`|object|Use Cross App Access (Identity Assertion / ID-JAG) to obtain a backend access token.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider`|object|The user's IdP authorization server, used for the RFC 8693 token exchange.<br>Exactly one of service, host, or backend may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.service`|object|Service reference. Service must be defined in the top level services list.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.service.name`|string|Name of the target Service, as defined in the top-level `services` list.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.service.port`|integer|Port on the target Service to route to.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.host`|string|Hostname or IP address|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.policies`|any|Backend policies used when connecting to the service.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.path`|string|Token endpoint path on the backend; defaults to "/".|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth`|object|Client authentication used when calling the token endpoint.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.clientId`|string|`client_id` parameter identifying the gateway at the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.clientSecret`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.clientSecret.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.method`|enum|Possible values: `clientSecretBasic`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.method`|enum|Possible values: `clientSecretPost`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.signingKey`|object|PEM-encoded private signing key (RSA or EC, matching `alg`).|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.signingKey.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.certificate`|object|PEM-encoded X.509 certificate chain, leaf first. The leaf public key must<br>correspond to `signing_key` for token endpoints to validate assertions.<br>A mismatch or comparison failure is logged and does not prevent loading.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.certificate.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.certificateHeader`|enum|JWS certificate header emitted from `certificate`. Required when `certificate` is set.<br>Possible values: `x5c`, `x5t#S256`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.alg`|enum|Possible values: `RS256`, `RS384`, `RS512`, `PS256`, `ES256`, `ES384`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.kid`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.assertionAudience`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.method`|enum|Possible values: `privateKeyJwt`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.identityProvider.clientAuth.clientSecret`|object|OAuth 2.0 client secret sent via HTTP Basic auth to the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer`|object|The resource authorization server, which exchanges the ID-JAG for an access token.<br>Exactly one of service, host, or backend may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.service`|object|Service reference. Service must be defined in the top level services list.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.service.name`|string|Name of the target Service, as defined in the top-level `services` list.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.service.port`|integer|Port on the target Service to route to.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.host`|string|Hostname or IP address|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.policies`|any|Backend policies used when connecting to the service.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.path`|string|Token endpoint path on the backend; defaults to "/".|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth`|object|Client authentication used when calling the token endpoint.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.clientId`|string|`client_id` parameter identifying the gateway at the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.clientSecret`|object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.clientSecret.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.method`|enum|Possible values: `clientSecretBasic`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.method`|enum|Possible values: `clientSecretPost`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.signingKey`|object|PEM-encoded private signing key (RSA or EC, matching `alg`).|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.signingKey.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.certificate`|object|PEM-encoded X.509 certificate chain, leaf first. The leaf public key must<br>correspond to `signing_key` for token endpoints to validate assertions.<br>A mismatch or comparison failure is logged and does not prevent loading.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.certificate.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.certificateHeader`|enum|JWS certificate header emitted from `certificate`. Required when `certificate` is set.<br>Possible values: `x5c`, `x5t#S256`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.alg`|enum|Possible values: `RS256`, `RS384`, `RS512`, `PS256`, `ES256`, `ES384`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.kid`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.assertionAudience`|string||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.method`|enum|Possible values: `privateKeyJwt`.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resourceAuthorizationServer.clientAuth.clientSecret`|object|OAuth 2.0 client secret sent via HTTP Basic auth to the authorization server.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.audience`|string|Identifier of the resource authorization server. The issued ID-JAG is bound to this audience.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.resources`|[]string|`resource` parameters naming the protected resource APIs.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.scopes`|[]string|`scope` values for the requested token, sent space-delimited.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken`|object|Subject token sent to the identity provider. Defaults to an OpenID Connect ID token read<br>from the Authorization Bearer header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source`|object|Where to read the subject token. Defaults to the Authorization Bearer header.<br>Exactly one of header, queryParameter, cookie, or expression may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.source.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.subjectToken.tokenType`|string|RFC 8693 subject token type URI. Defaults to an OpenID Connect ID token.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.cache`|object|Response cache configuration. Defaults to an in-memory cache with 8192 entries and a 300s<br>TTL when the token endpoint omits `expires_in`. Set `maxEntries` to 0 to disable.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.cache.maxEntries`|integer|Maximum number of token exchange responses to keep in the cache. Set to 0 to disable.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.crossAppAccess.cache.defaultTtl`|string|TTL used when the token endpoint omits `expires_in`. Defaults to 300s.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials`|[]object||
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location`|object|Where the credential is inserted on the backend request.<br>Exactly one of header, queryParameter, cookie, or expression may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.header`|object|Read the credential from an HTTP header.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.header.name`|string|Header name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.header.prefix`|string|Prefix to remove from the header value before validation, such as `Bearer ` or `Basic `.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.queryParameter`|object|Read the credential from a URL query parameter.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.queryParameter.name`|string|Query parameter name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.cookie`|object|Read the credential from a request cookie.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.cookie.name`|string|Cookie name containing the credential.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].location.expression`|string|Read the credential from a CEL expression evaluated against the incoming request.<br>CEL expression that returns the credential string. This location can extract credentials but cannot insert them.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].key`|object|Credential value.|
+|`frontendPolicies.networkExtAuthz.policies.backendAuth.credentials[].key.file`|string|Path to a file on disk to load the value from.|
+|`frontendPolicies.networkExtAuthz.policies.http`|object|HTTP protocol settings for this backend.|
+|`frontendPolicies.networkExtAuthz.policies.http.version`|string|HTTP version to use when connecting to the backend.|
+|`frontendPolicies.networkExtAuthz.policies.http.requestTimeout`|string|Maximum time allowed for a backend HTTP request.|
+|`frontendPolicies.networkExtAuthz.policies.tcp`|object|TCP protocol settings for this backend.|
+|`frontendPolicies.networkExtAuthz.policies.tcp.keepalives`|object|TCP keepalive settings for backend connections.|
+|`frontendPolicies.networkExtAuthz.policies.tcp.keepalives.enabled`|boolean|Enable TCP keepalive probes on backend connections. Defaults to true.|
+|`frontendPolicies.networkExtAuthz.policies.tcp.keepalives.time`|string|Idle time before the first keepalive probe is sent.|
+|`frontendPolicies.networkExtAuthz.policies.tcp.keepalives.interval`|string|Time between successive keepalive probes.|
+|`frontendPolicies.networkExtAuthz.policies.tcp.keepalives.retries`|integer|Number of unacknowledged probes before the connection is considered dead.|
+|`frontendPolicies.networkExtAuthz.policies.tcp.connectTimeout`|string|Maximum time allowed to establish a backend TCP connection.|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel`|object|Tunnel settings used when connecting to this backend.|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.proxy`|object|Proxy backend used to tunnel the connection.<br>Exactly one of service, host, or backend may be set.|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.proxy.service`|object|Service reference. Service must be defined in the top level services list.|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.proxy.service.name`|string|Name of the target Service, as defined in the top-level `services` list.|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.proxy.service.port`|integer|Port on the target Service to route to.|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.proxy.host`|string|Hostname or IP address|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.proxy.backend`|string|Explicit backend reference. Backend must be defined in the top level backends list|
+|`frontendPolicies.networkExtAuthz.policies.backendTunnel.policies`|any|Policies to connect to the proxy backend|
+|`frontendPolicies.networkExtAuthz.protocol`|object|Protocol used to call the authorization service. Use gRPC unless the service only supports HTTP.<br>Exactly one of grpc or http may be set.|
+|`frontendPolicies.networkExtAuthz.protocol.grpc`|object|Call the authorization service using the gRPC authorization protocol.|
+|`frontendPolicies.networkExtAuthz.protocol.grpc.context`|object|Static context values to send to the authorization service.<br>Maps to the `context_extensions` field in the request.|
+|`frontendPolicies.networkExtAuthz.protocol.grpc.metadata`|object|Metadata values to send to the authorization service, computed from CEL expressions.<br>Maps to the `metadata_context.filter_metadata` field in the request.<br>If unset, `envoy.filters.http.jwt_authn` is set when JWT auth is also used, for compatibility.|
+|`frontendPolicies.networkExtAuthz.protocol.http`|object|Call the authorization service using HTTP.|
+|`frontendPolicies.networkExtAuthz.protocol.http.path`|string|CEL expression that computes the authorization request path.|
+|`frontendPolicies.networkExtAuthz.protocol.http.redirect`|string|CEL expression that computes a redirect URL when authorization fails.<br>When the authorization service returns unauthorized, this redirects instead of returning the error directly.|
+|`frontendPolicies.networkExtAuthz.protocol.http.body`|string|CEL expression that computes the authorization request body.<br>Strings and bytes are used directly; other values are JSON-encoded.<br>If set, this replaces forwarding the incoming request body.|
+|`frontendPolicies.networkExtAuthz.protocol.http.includeResponseHeaders`|[]string|Authorization response headers to copy into the backend request.|
+|`frontendPolicies.networkExtAuthz.protocol.http.addRequestHeaders`|object|Headers to add to the authorization request using CEL expressions. Empty means all headers.|
+|`frontendPolicies.networkExtAuthz.protocol.http.metadata`|object|Metadata values to expose under the `extauthz` variable after authorization.|
+|`frontendPolicies.networkExtAuthz.failureMode`|object|Behavior when the authorization service is unavailable or returns an error.|
+|`frontendPolicies.networkExtAuthz.failureMode.denyWithStatus`|integer|Deny the request with the configured HTTP status code.|
+|`frontendPolicies.networkExtAuthz.includeRequestHeaders`|[]string|Request headers to send to the authorization service.<br>If unset, gRPC sends all request headers and HTTP sends only `Authorization`.|
+|`frontendPolicies.networkExtAuthz.includeRequestBody`|object|Options for sending the request body to the authorization service.|
+|`frontendPolicies.networkExtAuthz.includeRequestBody.maxRequestBytes`|integer|Maximum request body size to send to the authorization service. Defaults to 8192 bytes.|
+|`frontendPolicies.networkExtAuthz.includeRequestBody.allowPartialMessage`|boolean|Whether to send a partial body when the request exceeds `maxRequestBytes`.|
+|`frontendPolicies.networkExtAuthz.includeRequestBody.packAsBytes`|boolean|Whether to send the body as raw bytes for gRPC authorization checks.|
+|`frontendPolicies.networkExtAuthz.cache`|object|Cache authorization results using CEL expressions as the cache key.<br>Warning: the safety of this feature depends on the cache key accurately capturing the fields<br>the server operates on. For example, if you return a different result based on header A but only<br>cache header B, users may get incorrect cache hits.|
+|`frontendPolicies.networkExtAuthz.cache.key`|[]string|CEL expressions that make up the cache key. Empty keys are accepted, but do not produce cache hits.|
+|`frontendPolicies.networkExtAuthz.cache.ttl`|string|CEL expression that returns how long cached authorization results are reused.<br>The expression is evaluated after the authorization response has been applied<br>to the request, and must return either a duration or timestamp.|
+|`frontendPolicies.networkExtAuthz.cache.maxEntries`|integer|Maximum number of authorization results to keep in the cache.|
 |`frontendPolicies.proxy`|object|Enable downstream PROXY protocol handling on this gateway or port, including<br>version matching and whether PROXY headers are required or optional.|
 |`frontendPolicies.proxy.version`|enum|PROXY protocol versions accepted from downstream clients.<br>Possible values: `v1`, `v2`, `all`.|
 |`frontendPolicies.proxy.mode`|enum|Whether downstream connections must include a PROXY protocol header.<br>Possible values: `strict`, `optional`.|

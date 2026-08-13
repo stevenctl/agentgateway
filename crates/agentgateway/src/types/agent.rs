@@ -2656,6 +2656,7 @@ pub enum FrontendPolicy {
 	#[serde(rename = "tcp")]
 	TCP(frontend::TCP),
 	NetworkAuthorization(frontend::NetworkAuthorization),
+	NetworkExtAuthz(Arc<ext_authz::ExtAuthz>),
 	Proxy(frontend::Proxy),
 	Connect(frontend::Connect),
 	AccessLog(frontend::LoggingPolicy),
