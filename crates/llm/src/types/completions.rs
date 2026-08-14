@@ -421,7 +421,14 @@ impl super::RequestType for Request {
 			match &mut msg.content {
 				Some(Content::Text(text)) => f(text),
 				Some(Content::Array(parts)) => {
-					super::scan_text_runs(parts, " ", |p| p.text.as_mut(), f);
+					super::scan_text_runs(
+						parts,
+						" ",
+						|p| p.text.as_mut(),
+						|p| Some(&mut p.rest),
+						&["cache_control"],
+						f,
+					);
 				},
 				None => {},
 			}
@@ -1277,5 +1284,26 @@ mod tests {
 		});
 
 		assert!(llm_response.output_messages.is_none());
+	}
+
+	/// Masking must not drop a cache_control breakpoint on a drained content part.
+	#[test]
+	fn mask_carries_cache_control_to_survivor() {
+		use crate::types::RequestType;
+		let mut req: Request = serde_json::from_value(serde_json::json!({
+			"model": "gpt-4o",
+			"messages": [{"role": "user", "content": [
+				{"type": "text", "text": "email admin@example.com", "cache_control": {"type": "ephemeral"}},
+				{"type": "text", "text": "about the pods"}
+			]}]
+		}))
+		.unwrap();
+		req.visit_text_mut(&mut |t| *t = t.replace("admin@example.com", "<EMAIL>"));
+		assert_eq!(
+			serde_json::to_value(&req).unwrap()["messages"][0]["content"],
+			serde_json::json!([
+				{"type": "text", "text": "email <EMAIL> about the pods", "cache_control": {"type": "ephemeral"}}
+			])
+		);
 	}
 }

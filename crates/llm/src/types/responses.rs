@@ -96,6 +96,10 @@ impl RawInputItem {
 								_ => None,
 							}
 						},
+						// Raw parts are plain objects; the part doubles as its own rest.
+						// prompt_cache_breakpoint is the Responses-native breakpoint key.
+						|part| Some(part),
+						&["cache_control", "prompt_cache_breakpoint"],
 						f,
 					);
 				},
@@ -811,5 +815,25 @@ mod tests {
 		let llm_response = response.to_llm_response(crate::LogContentFields::default());
 
 		assert!(llm_response.output_messages.is_none());
+	}
+
+	/// Masking must not drop a prompt_cache_breakpoint on a drained input part.
+	#[test]
+	fn mask_carries_cache_breakpoint_to_survivor() {
+		let mut req: Request = serde_json::from_value(serde_json::json!({
+			"model": "gpt-4.1",
+			"input": [{"role": "user", "content": [
+				{"type": "input_text", "text": "my ssn is 123-45-6789", "prompt_cache_breakpoint": {"type": "ephemeral"}},
+				{"type": "input_text", "text": "part two"}
+			]}]
+		}))
+		.unwrap();
+		req.visit_text_mut(&mut |t| *t = t.replace("123-45-6789", "<SSN>"));
+		assert_eq!(
+			serde_json::to_value(&req).unwrap()["input"][0]["content"],
+			serde_json::json!([
+				{"type": "input_text", "text": "my ssn is <SSN>\npart two", "prompt_cache_breakpoint": {"type": "ephemeral"}}
+			])
+		);
 	}
 }

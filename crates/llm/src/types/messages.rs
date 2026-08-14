@@ -271,6 +271,11 @@ impl RequestType for Request {
 						TextPart::Text { text, .. } => Some(text),
 						TextPart::Unknown(_) => None,
 					},
+					|p| match p {
+						TextPart::Text { rest, .. } => Some(rest),
+						TextPart::Unknown(_) => None,
+					},
+					&["cache_control"],
 					f,
 				);
 			},
@@ -288,6 +293,11 @@ impl RequestType for Request {
 							// TODO opt-in setting to apply guards to tool results
 							ContentPart::Unknown(_) => None,
 						},
+						|p| match p {
+							ContentPart::Text { rest, .. } => Some(rest),
+							ContentPart::Unknown(_) => None,
+						},
+						&["cache_control"],
 						f,
 					);
 				},
@@ -1426,6 +1436,28 @@ mod tests {
 		assert_eq!(
 			tool_calls[0].arguments,
 			serde_json::json!({"location":"San Francisco"})
+		);
+	}
+
+	/// Masking must not drop a cache_control breakpoint on a drained part: the marker
+	/// governs the whole prefix ending there, not just the edited block.
+	#[test]
+	fn mask_carries_cache_control_to_survivor() {
+		let mut req: Request = serde_json::from_value(serde_json::json!({
+			"model": "claude-sonnet-5",
+			"max_tokens": 16,
+			"messages": [{"role": "user", "content": [
+				{"type": "text", "text": "my ssn is 123-45-6789", "cache_control": {"type": "ephemeral"}},
+				{"type": "text", "text": "part two"}
+			]}]
+		}))
+		.unwrap();
+		req.visit_text_mut(&mut |t| *t = t.replace("123-45-6789", "<SSN>"));
+		assert_eq!(
+			serde_json::to_value(&req).unwrap()["messages"][0]["content"],
+			serde_json::json!([
+				{"type": "text", "text": "my ssn is <SSN> part two", "cache_control": {"type": "ephemeral"}}
+			])
 		);
 	}
 }

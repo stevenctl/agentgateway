@@ -68,11 +68,15 @@ pub trait RequestType: Send + Sync {
 
 /// Scan runs of consecutive text parts as one `sep`-joined string: `[t1, t2, img, t3]` scans
 /// `"t1{sep}t2"` then `"t3"`. An edited run collapses into its last part (keeping its other
-/// fields, e.g. `cache_control`); untouched runs pass through unchanged.
+/// fields); untouched runs pass through unchanged. Cache breakpoint keys (`carry_keys`) on
+/// drained parts move onto the survivor (which keeps its own value on conflict), so masking a
+/// message does not silently disable prompt caching for the whole prefix ending there.
 pub(crate) fn scan_text_runs<T>(
 	parts: &mut Vec<T>,
 	sep: &str,
 	mut text_of: impl FnMut(&mut T) -> Option<&mut String>,
+	mut rest_of: impl FnMut(&mut T) -> Option<&mut serde_json::Value>,
+	carry_keys: &[&str],
 	f: &mut dyn FnMut(&mut String),
 ) {
 	if let [part] = parts.as_mut_slice() {
@@ -109,8 +113,30 @@ pub(crate) fn scan_text_runs<T>(
 		}
 
 		// collapse the run's text into the last part, and remove the others
+		let mut carried = serde_json::Map::new();
+		for j in i..end - 1 {
+			if let Some(rest) = rest_of(&mut parts[j]) {
+				for key in carry_keys {
+					if let Some(v) = rest.get(*key) {
+						carried.insert((*key).to_string(), v.clone());
+					}
+				}
+			}
+		}
 		if let Some(text) = text_of(&mut parts[end - 1]) {
 			*text = joined;
+		}
+		if !carried.is_empty()
+			&& let Some(rest) = rest_of(&mut parts[end - 1])
+		{
+			if !rest.is_object() {
+				*rest = serde_json::Value::Object(Default::default());
+			}
+			if let Some(obj) = rest.as_object_mut() {
+				for (k, v) in carried {
+					obj.entry(k).or_insert(v);
+				}
+			}
 		}
 		parts.drain(i..end - 1);
 		i += 1;
