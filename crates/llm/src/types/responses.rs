@@ -76,6 +76,37 @@ impl RawInputItem {
 		Some(SimpleChatCompletionMessage { role, content })
 	}
 
+	fn patch_text(&mut self, text: String) {
+		match self.0.get_mut("content") {
+			Some(Value::String(t)) => *t = text,
+			Some(Value::Array(parts)) => {
+				if !crate::types::collapse_text_parts_with(
+					parts,
+					|part| {
+						if !matches!(
+							part.get("type").and_then(|t| t.as_str()),
+							Some("input_text" | "output_text")
+						) {
+							return None;
+						}
+						match part.get_mut("text") {
+							Some(Value::String(text)) => Some(text),
+							_ => None,
+						}
+					},
+					// Raw parts are plain objects; the part doubles as its own rest.
+					// prompt_cache_breakpoint is the Responses-native breakpoint key.
+					|part| Some(part),
+					&["cache_control", "prompt_cache_breakpoint"],
+					&text,
+				) {
+					parts.push(serde_json::json!({"type": "input_text", "text": text}));
+				}
+			},
+			_ => {},
+		}
+	}
+
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
 		if self.0.get("role").is_some() {
 			match self.0.get_mut("content") {
@@ -449,6 +480,36 @@ impl RequestType for Request {
 				.map(RawInputItem::from_simple_message)
 				.collect(),
 		);
+	}
+
+	fn patch_messages(&mut self, patches: Vec<Option<String>>) {
+		let mut patches = patches.into_iter();
+		// Instructions occupy the leading slot whenever present (mirrors get_messages).
+		if self.instructions.is_some()
+			&& let Some(Some(text)) = patches.next()
+		{
+			self.instructions = Some(text);
+		}
+		match &mut self.input {
+			RequestInput::Text(text) => {
+				if let Some(Some(new)) = patches.next() {
+					*text = new;
+				}
+			},
+			RequestInput::Items(items) => {
+				for item in items {
+					// Items that were not surfaced to the guard consume no slot.
+					if item.as_simple_message().is_none() {
+						continue;
+					}
+					match patches.next() {
+						Some(Some(text)) => item.patch_text(text),
+						Some(None) => {},
+						None => break,
+					}
+				}
+			},
+		}
 	}
 
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {

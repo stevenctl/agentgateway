@@ -62,6 +62,18 @@ pub trait RequestType: Send + Sync {
 	fn to_llm_request(&self, provider: Strng, tokenize: bool) -> Result<LLMRequest, AIError>;
 	fn get_messages(&self) -> Vec<SimpleChatCompletionMessage>;
 	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>);
+	/// Write replacement text into existing messages in place, aligned with `get_messages` order;
+	/// `None` leaves that message untouched. Unlike `set_messages`, non-text content and message
+	/// fields survive. Default rebuilds via `set_messages` for types without an in-place impl.
+	fn patch_messages(&mut self, patches: Vec<Option<String>>) {
+		let mut messages = self.get_messages();
+		for (m, patch) in messages.iter_mut().zip(patches) {
+			if let Some(text) = patch {
+				m.content = strng::new(&text);
+			}
+		}
+		self.set_messages(messages);
+	}
 	fn to_value(&self) -> serde_json::Result<serde_json::Value>;
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String));
 }
@@ -115,6 +127,54 @@ pub(crate) fn scan_text_runs<T>(
 		parts.drain(i..end - 1);
 		i += 1;
 	}
+}
+
+/// Collapse a message's text parts into the last one (which keeps its other fields, mirroring
+/// `scan_text_runs`) and write `text` into it; non-text parts stay in place. Cache breakpoint
+/// keys (`carry_keys`) on removed parts are carried onto the survivor so masking does not
+/// silently disable prompt caching. Returns false when there is no text part to write into.
+pub(crate) fn collapse_text_parts_with<T>(
+	parts: &mut Vec<T>,
+	mut text_of: impl FnMut(&mut T) -> Option<&mut String>,
+	mut rest_of: impl FnMut(&mut T) -> Option<&mut serde_json::Value>,
+	carry_keys: &[&str],
+	text: &str,
+) -> bool {
+	let text_idxs: Vec<usize> = (0..parts.len())
+		.filter(|&i| text_of(&mut parts[i]).is_some())
+		.collect();
+	let Some((&survivor, drained)) = text_idxs.split_last() else {
+		return false;
+	};
+	let mut carried = serde_json::Map::new();
+	for &i in drained {
+		if let Some(rest) = rest_of(&mut parts[i]) {
+			for key in carry_keys {
+				if let Some(v) = rest.get(*key) {
+					carried.insert((*key).to_string(), v.clone());
+				}
+			}
+		}
+	}
+	if let Some(t) = text_of(&mut parts[survivor]) {
+		*t = text.to_string();
+	}
+	if !carried.is_empty()
+		&& let Some(rest) = rest_of(&mut parts[survivor])
+	{
+		if !rest.is_object() {
+			*rest = serde_json::Value::Object(Default::default());
+		}
+		if let Some(obj) = rest.as_object_mut() {
+			for (k, v) in carried {
+				obj.entry(k).or_insert(v);
+			}
+		}
+	}
+	for &i in drained.iter().rev() {
+		parts.remove(i);
+	}
+	true
 }
 
 /// SimpleChatCompletionMessage is a simplified chat message

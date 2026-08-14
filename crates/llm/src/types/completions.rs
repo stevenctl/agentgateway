@@ -412,6 +412,31 @@ impl super::RequestType for Request {
 		self.messages = messages.into_iter().map(convert_message).collect();
 	}
 
+	fn patch_messages(&mut self, patches: Vec<Option<String>>) {
+		for (msg, patch) in self.messages.iter_mut().zip(patches) {
+			let Some(text) = patch else { continue };
+			match &mut msg.content {
+				Some(Content::Text(t)) => *t = text,
+				Some(Content::Array(parts)) => {
+					if !super::collapse_text_parts_with(
+						parts,
+						|p| p.text.as_mut(),
+						|p| Some(&mut p.rest),
+						&["cache_control"],
+						&text,
+					) {
+						parts.push(ContentPart {
+							r#type: "text".to_string(),
+							text: Some(text),
+							rest: Default::default(),
+						});
+					}
+				},
+				None => msg.content = Some(Content::Text(text)),
+			}
+		}
+	}
+
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
 		for msg in &mut self.messages {
 			// TODO opt-in setting to apply guards to tool results

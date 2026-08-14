@@ -260,6 +260,63 @@ impl RequestType for Request {
 		self.messages = message_prompts.into_iter().map(Into::into).collect();
 	}
 
+	fn patch_messages(&mut self, patches: Vec<Option<String>>) {
+		let mut patches = patches.into_iter();
+		// The system field occupies the leading slot only when get_messages surfaced it.
+		if !get_messages_helper(&[], &self.system).is_empty()
+			&& let Some(Some(text)) = patches.next()
+		{
+			match &mut self.system {
+				Some(TextBlock::Text(t)) => *t = text,
+				Some(TextBlock::Array(parts)) => {
+					crate::types::collapse_text_parts_with(
+						parts,
+						|p| match p {
+							TextPart::Text { text, .. } => Some(text),
+							TextPart::Unknown(_) => None,
+						},
+						|p| match p {
+							TextPart::Text { rest, .. } => Some(rest),
+							TextPart::Unknown(_) => None,
+						},
+						&["cache_control"],
+						&text,
+					);
+				},
+				None => {},
+			}
+		}
+		for msg in &mut self.messages {
+			let Some(patch) = patches.next() else { break };
+			let Some(text) = patch else { continue };
+			match &mut msg.content {
+				Some(ContentBlock::Text(t)) => *t = text,
+				Some(ContentBlock::Array(parts)) => {
+					if !crate::types::collapse_text_parts_with(
+						parts,
+						|p| match p {
+							ContentPart::Text { text, .. } => Some(text),
+							ContentPart::Unknown(_) => None,
+						},
+						|p| match p {
+							ContentPart::Text { rest, .. } => Some(rest),
+							ContentPart::Unknown(_) => None,
+						},
+						&["cache_control"],
+						&text,
+					) {
+						parts.push(ContentPart::Text {
+							r#type: "text".to_string(),
+							text,
+							rest: Default::default(),
+						});
+					}
+				},
+				None => msg.content = Some(ContentBlock::Text(text)),
+			}
+		}
+	}
+
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
 		match &mut self.system {
 			Some(TextBlock::Text(text)) => f(text),

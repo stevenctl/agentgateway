@@ -2131,3 +2131,203 @@ fn test_zero_width_pattern_is_a_noop() {
 		})
 	);
 }
+
+/// Drive the webhook mask path: diff the returned messages against what was sent, then apply.
+#[cfg(test)]
+fn run_webhook_mask(
+	req: &mut dyn crate::llm::RequestType,
+	returned: Vec<crate::llm::SimpleChatCompletionMessage>,
+) {
+	let sent = req.get_messages();
+	let mutation = Policy::webhook_mask_mutation(&sent, returned);
+	let (action, rejection) =
+		Policy::apply_request_guard_outcome(GuardrailOutcome::Masked(mutation), req).unwrap();
+	assert_eq!(action, GuardrailAction::Mask);
+	assert!(rejection.is_none());
+}
+
+/// A masked user turn must not disturb cached system blocks: cache_control markers
+/// serialize byte-identically, keeping Anthropic prompt caching alive.
+#[test]
+fn webhook_mask_preserves_anthropic_cache_control() {
+	let input = serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"system": [
+			{"type": "text", "text": "You are a helpful assistant."},
+			{"type": "text", "text": "Big corpus here.", "cache_control": {"type": "ephemeral"}}
+		],
+		"messages": [
+			{"role": "user", "content": "my ssn is 123-45-6789"}
+		]
+	});
+	let mut req: crate::llm::types::messages::Request =
+		serde_json::from_value(input.clone()).unwrap();
+	let mut returned = req.get_messages();
+	returned[1].content = agent_core::strng::new("my ssn is <SSN>");
+	run_webhook_mask(&mut req, returned);
+
+	let out = serde_json::to_value(&req).unwrap();
+	assert_eq!(out["system"], input["system"]);
+	assert_eq!(
+		out["messages"],
+		serde_json::json!([{"role": "user", "content": "my ssn is <SSN>"}])
+	);
+}
+
+/// Masking one turn of an agent conversation must leave tool_use/tool_result/image blocks intact.
+#[test]
+fn webhook_mask_preserves_anthropic_tool_blocks() {
+	let input = serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": "email admin@example.com about the pods"},
+			{"role": "assistant", "content": [
+				{"type": "text", "text": "Calling the tool."},
+				{"type": "tool_use", "id": "toolu_01", "name": "k8s_get_resources", "input": {"ns": "kagent"}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": "pod-a Running"},
+				{"type": "image", "source": {"type": "base64", "data": "aGk="}}
+			]}
+		]
+	});
+	let mut req: crate::llm::types::messages::Request =
+		serde_json::from_value(input.clone()).unwrap();
+	let mut returned = req.get_messages();
+	returned[0].content = agent_core::strng::new("email <EMAIL_ADDRESS> about the pods");
+	run_webhook_mask(&mut req, returned);
+
+	let out = serde_json::to_value(&req).unwrap();
+	assert_eq!(
+		out["messages"][0],
+		serde_json::json!({"role": "user", "content": "email <EMAIL_ADDRESS> about the pods"})
+	);
+	assert_eq!(out["messages"][1], input["messages"][1]);
+	assert_eq!(out["messages"][2], input["messages"][2]);
+}
+
+/// Completions: tool_calls / tool_call_id / name on other messages survive a mask.
+#[test]
+fn webhook_mask_preserves_completions_tool_calls() {
+	let input = serde_json::json!({
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "name": "steven", "content": "email admin@example.com"},
+			{"role": "assistant", "content": null, "tool_calls": [
+				{"id": "call_01", "type": "function", "function": {"name": "list_pods", "arguments": "{}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_01", "content": "pod-a Running"}
+		]
+	});
+	let mut req: crate::llm::types::completions::Request =
+		serde_json::from_value(input.clone()).unwrap();
+	let mut returned = req.get_messages();
+	returned[0].content = agent_core::strng::new("email <EMAIL_ADDRESS>");
+	run_webhook_mask(&mut req, returned);
+
+	let out = serde_json::to_value(&req).unwrap();
+	assert_eq!(
+		out["messages"],
+		serde_json::json!([
+			{"role": "user", "name": "steven", "content": "email <EMAIL_ADDRESS>"},
+			{"role": "assistant", "tool_calls": [
+				{"id": "call_01", "type": "function", "function": {"name": "list_pods", "arguments": "{}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_01", "content": "pod-a Running"}
+		])
+	);
+}
+
+/// Masking a multi-part message collapses its text parts into the last one, and a
+/// cache_control marker on a drained part is carried onto the survivor.
+#[test]
+fn webhook_mask_collapses_parts_and_carries_cache_control() {
+	let input = serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "part one ssn 123-45-6789", "cache_control": {"type": "ephemeral"}},
+				{"type": "text", "text": "part two"}
+			]}
+		]
+	});
+	let mut req: crate::llm::types::messages::Request = serde_json::from_value(input).unwrap();
+	let mut returned = req.get_messages();
+	returned[0].content = agent_core::strng::new("part one ssn <SSN> part two");
+	run_webhook_mask(&mut req, returned);
+
+	let out = serde_json::to_value(&req).unwrap();
+	assert_eq!(
+		out["messages"][0]["content"],
+		serde_json::json!([
+			{"type": "text", "text": "part one ssn <SSN> part two", "cache_control": {"type": "ephemeral"}}
+		])
+	);
+}
+
+/// Responses: instructions map to the leading system slot; non-message items consume no slot
+/// and survive untouched, as does a Responses-native cache breakpoint on the masked part.
+#[test]
+fn webhook_mask_preserves_responses_items() {
+	let input = serde_json::json!({
+		"model": "gpt-4o",
+		"instructions": "be nice",
+		"input": [
+			{"role": "user", "content": [
+				{"type": "input_text", "text": "email admin@example.com", "prompt_cache_breakpoint": {"type": "ephemeral"}}
+			]},
+			{"type": "function_call", "call_id": "call_01", "name": "list_pods", "arguments": "{}"}
+		]
+	});
+	let mut req: crate::llm::types::responses::Request =
+		serde_json::from_value(input.clone()).unwrap();
+	let mut returned = req.get_messages();
+	returned[1].content = agent_core::strng::new("email <EMAIL_ADDRESS>");
+	run_webhook_mask(&mut req, returned);
+
+	let out = serde_json::to_value(&req).unwrap();
+	assert_eq!(out["instructions"], input["instructions"]);
+	assert_eq!(
+		out["input"],
+		serde_json::json!([
+			{"role": "user", "content": [
+				{"type": "input_text", "text": "email <EMAIL_ADDRESS>", "prompt_cache_breakpoint": {"type": "ephemeral"}}
+			]},
+			{"type": "function_call", "call_id": "call_01", "name": "list_pods", "arguments": "{}"}
+		])
+	);
+}
+
+/// A webhook that restructures the conversation (message count changes) falls back to the
+/// full rebuild: plain-text messages, system dropped unless returned.
+#[test]
+fn webhook_mask_count_mismatch_falls_back_to_rebuild() {
+	let input = serde_json::json!({
+		"model": "claude-sonnet-5",
+		"max_tokens": 1024,
+		"system": "You are a helpful assistant.",
+		"messages": [
+			{"role": "user", "content": "part one"},
+			{"role": "user", "content": "part two"}
+		]
+	});
+	let mut req: crate::llm::types::messages::Request = serde_json::from_value(input).unwrap();
+	let returned = vec![crate::llm::SimpleChatCompletionMessage {
+		role: agent_core::strng::new("user"),
+		content: agent_core::strng::new("merged"),
+	}];
+	run_webhook_mask(&mut req, returned);
+
+	let out = serde_json::to_value(&req).unwrap();
+	assert_eq!(
+		out,
+		serde_json::json!({
+			"model": "claude-sonnet-5",
+			"max_tokens": 1024,
+			"messages": [{"role": "user", "content": "merged"}]
+		})
+	);
+}

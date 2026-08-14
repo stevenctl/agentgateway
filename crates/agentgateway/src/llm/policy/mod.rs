@@ -319,6 +319,8 @@ impl TextReplacements {
 enum RequestGuardMutation {
 	Texts(TextReplacements),
 	Messages(Vec<crate::llm::SimpleChatCompletionMessage>),
+	/// Per-message text patches aligned with `get_messages`; `None` leaves a message untouched.
+	PatchedMessages(Vec<Option<String>>),
 }
 
 enum ResponseGuardMutation {
@@ -809,6 +811,7 @@ impl Policy {
 					replacements.apply(|visitor| req.visit_text_mut(visitor));
 				},
 				RequestGuardMutation::Messages(messages) => req.set_messages(messages),
+				RequestGuardMutation::PatchedMessages(patches) => req.patch_messages(patches),
 			}
 			Ok(())
 		})
@@ -1183,18 +1186,19 @@ impl Policy {
 		let context = webhook::EvaluationContext::new(original, llm_request.as_ref());
 		let messages = req.get_messages();
 		let headers = Self::get_webhook_forward_headers(http_headers, &webhook.forward_header_matches);
-		let whr = match webhook::send_request(client, webhook, context, &headers, messages).await {
-			Ok(whr) => whr,
-			Err(e) => {
-				return match webhook.failure_mode {
-					FailureMode::FailOpen => {
-						warn!("webhook guardrail unavailable, failing open: {}", e);
-						Ok(GuardrailOutcome::FailOpen)
-					},
-					FailureMode::FailClosed => Err(e),
-				};
-			},
-		};
+		let whr =
+			match webhook::send_request(client, webhook, context, &headers, messages.clone()).await {
+				Ok(whr) => whr,
+				Err(e) => {
+					return match webhook.failure_mode {
+						FailureMode::FailOpen => {
+							warn!("webhook guardrail unavailable, failing open: {}", e);
+							Ok(GuardrailOutcome::FailOpen)
+						},
+						FailureMode::FailClosed => Err(e),
+					};
+				},
+			};
 		match whr.action {
 			RequestAction::Mask(mask) => {
 				debug!(
@@ -1206,7 +1210,8 @@ impl Policy {
 				let MaskActionBody::PromptMessages(body) = mask.body else {
 					anyhow::bail!("invalid webhook response");
 				};
-				Ok(GuardrailOutcome::Masked(RequestGuardMutation::Messages(
+				Ok(GuardrailOutcome::Masked(Self::webhook_mask_mutation(
+					&messages,
 					body.messages,
 				)))
 			},
@@ -1233,6 +1238,27 @@ impl Policy {
 				Ok(GuardrailOutcome::None)
 			},
 		}
+	}
+
+	/// Rebuilding the request from the webhook's flat message list destroys structure
+	/// (cache_control, tool blocks, images), so when the shape is unchanged we patch only the
+	/// messages whose text changed. A webhook that restructures the conversation (count or role
+	/// change) still gets the full rebuild.
+	fn webhook_mask_mutation(
+		sent: &[crate::llm::SimpleChatCompletionMessage],
+		returned: Vec<crate::llm::SimpleChatCompletionMessage>,
+	) -> RequestGuardMutation {
+		if returned.len() != sent.len() || sent.iter().zip(&returned).any(|(s, r)| s.role != r.role) {
+			warn!("webhook mask restructured messages; rebuilding request as plain text");
+			return RequestGuardMutation::Messages(returned);
+		}
+		RequestGuardMutation::PatchedMessages(
+			sent
+				.iter()
+				.zip(returned)
+				.map(|(s, r)| (r.content != s.content).then(|| r.content.to_string()))
+				.collect(),
+		)
 	}
 
 	async fn evaluate_webhook_response(
