@@ -260,8 +260,24 @@ pub struct PromptGuard {
 	)]
 	pub request: Vec<RequestGuard>,
 	/// Guards applied to LLM responses before they reach the client.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	#[serde(
+		default,
+		deserialize_with = "de_response_guards",
+		skip_serializing_if = "Vec::is_empty"
+	)]
 	pub response: Vec<ResponseGuard>,
+}
+
+/// TODO not all guard types properly scan all scopes
+/// avoids silently ignoring configured scopes
+fn de_response_guards<'de, D: serde::Deserializer<'de>>(
+	deserializer: D,
+) -> Result<Vec<ResponseGuard>, D::Error> {
+	let guards = <Vec<ResponseGuard> as serde::Deserialize>::deserialize(deserializer)?;
+	for guard in &guards {
+		guard.validate_scope().map_err(serde::de::Error::custom)?;
+	}
+	Ok(guards)
 }
 
 /// TODO not all guard types properly scan all scopes
@@ -403,8 +419,8 @@ impl crate::llm::ResponseType for TextResponse {
 		serde_json::to_vec(&self.to_webhook_choices())
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
-		f(&mut self.content);
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ContentScope, &mut String)) {
+		f(ContentScope::Messages, &mut self.content);
 	}
 }
 
@@ -837,7 +853,7 @@ impl Policy {
 		Self::apply_guardrail_outcome(outcome, |mutation| {
 			match mutation {
 				ResponseGuardMutation::Texts(replacements) => {
-					replacements.apply(|visitor| resp.visit_text_mut(visitor));
+					replacements.apply(|visitor| resp.visit_text_mut(&mut |_, text| visitor(text)));
 				},
 				ResponseGuardMutation::Choices(choices) => resp.set_webhook_choices(choices)?,
 			}
@@ -1158,8 +1174,9 @@ impl Policy {
 		resp: &mut dyn ResponseType,
 		rgx: &RegexRules,
 		rej: &RequestRejection,
+		guard_scope: &[ContentScope],
 	) -> anyhow::Result<GuardrailAction> {
-		let outcome = Self::evaluate_regex_response(resp, rgx, rej);
+		let outcome = Self::evaluate_regex_response(resp, rgx, rej, guard_scope);
 		let (action, _) = Self::apply_response_guard_outcome(outcome, resp)?;
 		Ok(action)
 	}
@@ -1168,11 +1185,17 @@ impl Policy {
 		resp: &mut dyn ResponseType,
 		rgx: &RegexRules,
 		rejection: &RequestRejection,
+		guard_scope: &[ContentScope],
 	) -> GuardrailOutcome<ResponseGuardMutation> {
 		let mut replacements = Vec::new();
 		let mut rejected = false;
-		resp.visit_text_mut(&mut |text| {
+		resp.visit_text_mut(&mut |content_scope, text| {
 			if rejected {
+				return;
+			}
+			// out-of-scope texts still occupy a slot so the mask replay stays aligned
+			if !guard_scope.contains(&content_scope) {
+				replacements.push(None);
 				return;
 			}
 			match Self::apply_prompt_guard_regex(text, rgx) {
@@ -1487,7 +1510,12 @@ impl Policy {
 		original: Option<&cel::RequestSnapshot>,
 	) -> anyhow::Result<GuardrailOutcome<ResponseGuardMutation>> {
 		match &guard.kind {
-			ResponseGuardKind::Regex(rg) => Ok(Self::evaluate_regex_response(resp, rg, &guard.rejection)),
+			ResponseGuardKind::Regex(rg) => Ok(Self::evaluate_regex_response(
+				resp,
+				rg,
+				&guard.rejection,
+				&guard.scope,
+			)),
 			ResponseGuardKind::Webhook(wh) => {
 				Self::evaluate_webhook_response(resp, http_headers, client, wh, original).await
 			},
@@ -1876,9 +1904,36 @@ pub struct ResponseGuard {
 	/// Response returned when the LLM response is rejected.
 	#[serde(default)]
 	pub rejection: RequestRejection,
+	/// Which parts of the response this guard inspects.
+	#[serde(
+		default = "default_content_scope",
+		deserialize_with = "de_content_scope"
+	)]
+	#[cfg_attr(feature = "schema", schemars(length(min = 1)))]
+	pub scope: Vec<ContentScope>,
 	/// Guardrail provider or rule set to apply.
 	#[serde(flatten)]
 	pub kind: ResponseGuardKind,
+}
+
+impl ResponseGuard {
+	/// TODO not all guard types properly scan all scopes
+	/// avoids silently ignoring configured scopes
+	pub(crate) fn validate_scope(&self) -> Result<(), String> {
+		if matches!(self.kind, ResponseGuardKind::Regex(_)) {
+			return Ok(());
+		}
+		let default = default_content_scope();
+		let is_default =
+			self.scope.len() == default.len() && default.iter().all(|s| self.scope.contains(s));
+		if is_default {
+			return Ok(());
+		}
+		Err(format!(
+			"scope: only regex guards support a non-default scope; {} guards always inspect the default (systemPrompt + messages)",
+			self.kind.name(),
+		))
+	}
 }
 
 #[apply(schema!)]
@@ -1893,6 +1948,18 @@ pub enum ResponseGuardKind {
 	GoogleModelArmor(GoogleModelArmor),
 	/// Use Azure Content Safety to evaluate the response.
 	AzureContentSafety(AzureContentSafety),
+}
+
+impl ResponseGuardKind {
+	fn name(&self) -> &'static str {
+		match self {
+			ResponseGuardKind::Regex(_) => "regex",
+			ResponseGuardKind::Webhook(_) => "webhook",
+			ResponseGuardKind::BedrockGuardrails(_) => "bedrockGuardrails",
+			ResponseGuardKind::GoogleModelArmor(_) => "googleModelArmor",
+			ResponseGuardKind::AzureContentSafety(_) => "azureContentSafety",
+		}
+	}
 }
 
 #[apply(schema!)]

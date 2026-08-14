@@ -1,5 +1,6 @@
 ---
 source: crates/llm/src/golden_tests.rs
+assertion_line: 510
 description: src/tests/response/responses/basic.json
 info:
   id: resp_0fd43e1b46691ead0069a89a2144808199a06ce29faf5798da
@@ -65,7 +66,9 @@ info:
     "status": "completed",
     "output": [
       {
+        "id": "[id]",
         "type": "message",
+        "status": "completed",
         "content": [
           {
             "type": "output_text",
@@ -74,9 +77,7 @@ info:
             "text": "Hello! How can I assist you today?"
           }
         ],
-        "id": "[id]",
-        "role": "assistant",
-        "status": "completed"
+        "role": "assistant"
       }
     ],
     "model": "gpt-4o-2024-08-06",

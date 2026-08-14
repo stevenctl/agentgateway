@@ -97,7 +97,7 @@ const (
 	REJECT Action = "Reject"
 )
 
-// Which category of request content a prompt guard inspects.
+// Which category of request or response content a prompt guard inspects.
 // +k8s:enum
 type ContentScope string
 
@@ -286,11 +286,21 @@ type PromptguardRequest struct {
 
 // Prompt guards to apply to responses returned by the LLM provider.
 // +kubebuilder:validation:ExactlyOneOf=regex;webhook;bedrockGuardrails;googleModelArmor
+// +kubebuilder:validation:XValidation:rule="!has(self.scope) || has(self.regex) || (self.scope.size() == 2 && 'SystemPrompt' in self.scope && 'Messages' in self.scope)",message="scope: only regex guards support a non-default scope; other guard kinds always inspect the default (SystemPrompt + Messages)"
 type PromptguardResponse struct {
 	// Custom response message to return to the client. If not specified, defaults to
 	// `The response was rejected due to inappropriate content`.
 	// +optional
 	CustomResponse *CustomResponse `json:"response,omitempty"`
+
+	// Which parts of the response this guard inspects. When unset, defaults to
+	// `SystemPrompt` and `Messages`. Tool call inputs and outputs are not
+	// inspected unless `ToolInput`/`ToolOutput` are listed explicitly.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=set
+	// +optional
+	Scope []ContentScope `json:"scope,omitempty"`
 
 	// Regular expression (regex) matching for prompt guards and data masking.
 	// +optional

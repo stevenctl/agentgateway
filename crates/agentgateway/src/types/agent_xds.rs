@@ -1055,7 +1055,17 @@ fn convert_backend_ai_policy(
 					})
 				},
 			};
-			Some(llm::policy::ResponseGuard { rejection, kind })
+			let guard = llm::policy::ResponseGuard {
+				rejection,
+				scope: convert_content_scopes(&reqp.scope).ok()?,
+				kind,
+			};
+
+			// TODO not all guard types properly scan all scopes
+			// avoids silently ignoring configured scopes
+			guard.validate_scope().ok()?;
+
+			Some(guard)
 		});
 
 		let streaming =

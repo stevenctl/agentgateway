@@ -38,6 +38,9 @@ spec:
         response:
           - response:
               message: "regex rejected on response"
+            scope:
+              - Messages
+              - ToolInput
             regex:
               builtins:
                 - Email
@@ -123,6 +126,15 @@ spec:
   ports:
     - port: 80
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-guardrails-webhook
+  namespace: default
+spec:
+  ports:
+    - port: 8000
+---
 # Output
 output:
 - gateway:
@@ -178,6 +190,38 @@ output:
                     hostname: webhook.default.svc.cluster.local
                     namespace: default
                 failureMode: FAIL_OPEN
+            response:
+            - regex:
+                rules:
+                - regex: bad.*
+                - builtin: EMAIL
+                - builtin: CA_SIN
+                - builtin: PHONE_NUMBER
+                - builtin: SSN
+              rejection:
+                body: cmVnZXggcmVqZWN0ZWQgb24gcmVzcG9uc2U=
+              scope:
+              - CONTENT_SCOPE_MESSAGES
+              - CONTENT_SCOPE_TOOL_INPUT
+            - webhook:
+                backend:
+                  port: 8000
+                  service:
+                    hostname: ai-guardrails-webhook.default.svc.cluster.local
+                    namespace: default
+            - bedrockGuardrails:
+                identifier: bedrock-guardrail-identifier
+                region: us-west-2
+                version: DRAFT
+            - googleModelArmor:
+                inlinePolicies:
+                - auth:
+                    gcp:
+                      idToken:
+                        audience: https://ai-guardrails.example.com
+                location: us-central1
+                projectId: model-armor-project-id
+                templateId: model-armor-template-id
           prompts:
             append:
             - content: hello!
@@ -235,8 +279,13 @@ status:
         namespace: default
       conditions:
       - lastTransitionTime: fake
-        message: 'failed to build webhook: unable to find the Service default/ai-guardrails-webhook'
-        reason: PartiallyValid
+        message: Policy accepted
+        reason: Valid
         status: "True"
         type: Accepted
+      - lastTransitionTime: fake
+        message: Attached to all targets
+        reason: Attached
+        status: "True"
+        type: Attached
       controllerName: agentgateway.dev/agentgateway

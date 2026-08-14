@@ -20,10 +20,10 @@ info:
     "output": [
       {
         "type": "function_call",
-        "arguments": "{\"location\": \"Par",
+        "id": "[id]",
         "call_id": "call_1",
         "name": "get_weather",
-        "id": "[id]",
+        "arguments": "{\"location\": \"Par",
         "status": "completed"
       }
     ],

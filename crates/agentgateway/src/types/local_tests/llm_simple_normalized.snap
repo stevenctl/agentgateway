@@ -281,6 +281,9 @@ backends:
                 rejection:
                   body: The request was rejected due to inappropriate content
                   status: 403
+                scope:
+                  - systemPrompt
+                  - messages
           promptCaching:
             cacheSystem: true
             cacheMessages: true

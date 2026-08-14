@@ -3,8 +3,7 @@ use serde_json::Value;
 
 use self::typed::{
 	EasyInputContent, EasyInputMessage, InputContent, InputItem, InputMessage, InputRole,
-	InputTextContent, OutputItem, OutputMessageContent as Content, OutputTextContent as OutputText,
-	Role,
+	InputTextContent, OutputItem, Role,
 };
 use super::*;
 use crate::{
@@ -17,14 +16,16 @@ use crate::{
 #[serde(untagged)]
 pub enum RequestInput {
 	Text(String),
-	Items(Vec<RawInputItem>),
+	Items(Vec<RawItem>),
 }
 
+/// A raw request `input` or response `output` item. The wire vocabulary is shared: output
+/// items are replayable as input, so one visitor covers both sides.
 #[derive(Debug, Deserialize, Clone, Serialize, PartialEq)]
 #[serde(transparent)]
-pub struct RawInputItem(Value);
+pub struct RawItem(Value);
 
-impl RawInputItem {
+impl RawItem {
 	fn from_typed(item: InputItem) -> Self {
 		Self(serde_json::to_value(item).expect("responses input item should serialize"))
 	}
@@ -96,6 +97,27 @@ impl RawInputItem {
 			return;
 		}
 		visit_tool_item_text(&mut self.0, f);
+	}
+
+	fn is_message(&self) -> bool {
+		self.0.get("type").and_then(|t| t.as_str()) == Some("message")
+	}
+
+	/// Text of a `message` item's `output_text` parts.
+	fn output_texts(&self) -> Vec<String> {
+		self
+			.0
+			.get("content")
+			.and_then(|c| c.as_array())
+			.into_iter()
+			.flatten()
+			.filter_map(|part| {
+				if part.get("type")?.as_str()? != "output_text" {
+					return None;
+				}
+				Some(part.get("text")?.as_str()?.to_string())
+			})
+			.collect()
 	}
 }
 
@@ -264,7 +286,7 @@ pub struct RequestVendorExtensions {
 pub struct Response {
 	pub id: String,
 	pub status: String,
-	pub output: Vec<OutputItem>,
+	pub output: Vec<RawItem>,
 	pub model: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub service_tier: Option<String>,
@@ -451,9 +473,9 @@ impl From<SimpleChatCompletionMessage> for InputItem {
 }
 
 impl Request {
-	fn take_input_as_items(&mut self) -> Vec<RawInputItem> {
+	fn take_input_as_items(&mut self) -> Vec<RawItem> {
 		match std::mem::replace(&mut self.input, RequestInput::Items(Vec::new())) {
-			RequestInput::Text(text) => vec![RawInputItem::from_user_text(text)],
+			RequestInput::Text(text) => vec![RawItem::from_user_text(text)],
 			RequestInput::Items(items) => items,
 		}
 	}
@@ -473,9 +495,9 @@ impl RequestType for Request {
 
 	fn prepend_prompts(&mut self, prompts: Vec<SimpleChatCompletionMessage>) {
 		let mut items = self.take_input_as_items();
-		let prepend_items: Vec<RawInputItem> = prompts
+		let prepend_items: Vec<RawItem> = prompts
 			.into_iter()
-			.map(RawInputItem::from_simple_message)
+			.map(RawItem::from_simple_message)
 			.collect();
 		items.splice(0..0, prepend_items);
 		self.input = RequestInput::Items(items);
@@ -483,7 +505,7 @@ impl RequestType for Request {
 
 	fn append_prompts(&mut self, prompts: Vec<SimpleChatCompletionMessage>) {
 		let mut items = self.take_input_as_items();
-		items.extend(prompts.into_iter().map(RawInputItem::from_simple_message));
+		items.extend(prompts.into_iter().map(RawItem::from_simple_message));
 		self.input = RequestInput::Items(items);
 	}
 
@@ -537,7 +559,7 @@ impl RequestType for Request {
 			},
 			RequestInput::Items(items) => items
 				.iter()
-				.filter_map(RawInputItem::as_simple_message)
+				.filter_map(RawItem::as_simple_message)
 				.collect(),
 		});
 		messages
@@ -556,7 +578,7 @@ impl RequestType for Request {
 		self.input = RequestInput::Items(
 			messages
 				.into_iter()
-				.map(RawInputItem::from_simple_message)
+				.map(RawItem::from_simple_message)
 				.collect(),
 		);
 	}
@@ -580,7 +602,10 @@ fn extract_output_messages(resp: &Response) -> Option<Vec<OutputMessage>> {
 	let content: Vec<_> = resp
 		.output
 		.iter()
-		.filter_map(output_item_tool_call_part)
+		.filter_map(|item| {
+			let typed: OutputItem = serde_json::from_value(item.0.clone()).ok()?;
+			output_item_tool_call_part(&typed)
+		})
 		.collect();
 
 	if content.is_empty() {
@@ -668,16 +693,8 @@ impl ResponseType for Response {
 					self
 						.output
 						.iter()
-						.filter_map(|o| match o {
-							OutputItem::Message(msg) => Some(msg),
-							_ => None,
-						})
-						.flat_map(|msg| {
-							msg.content.iter().filter_map(|c| match c {
-								Content::OutputText(t) => Some(t.text.clone()),
-								_ => None,
-							})
-						})
+						.filter(|o| o.is_message())
+						.flat_map(RawItem::output_texts)
 						.collect(),
 				)
 			} else {
@@ -692,27 +709,13 @@ impl ResponseType for Response {
 		self
 			.output
 			.iter()
-			.filter_map(|o| match o {
-				OutputItem::Message(msg) => {
-					// Extract text from message content
-					let content = msg
-						.content
-						.iter()
-						.filter_map(|c| match c {
-							Content::OutputText(t) => Some(t.text.clone()),
-							_ => None,
-						})
-						.collect::<Vec<_>>()
-						.join("\n");
-
-					Some(crate::webhook::ResponseChoice {
-						message: crate::webhook::Message {
-							role: "assistant".into(),
-							content: content.into(),
-						},
-					})
+			// Ignore non-message outputs (tool calls, reasoning, etc.)
+			.filter(|o| o.is_message())
+			.map(|o| crate::webhook::ResponseChoice {
+				message: crate::webhook::Message {
+					role: "assistant".into(),
+					content: o.output_texts().join("\n").into(),
 				},
-				_ => None, // Ignore non-message outputs (tool calls, reasoning, etc.)
 			})
 			.collect()
 	}
@@ -722,14 +725,7 @@ impl ResponseType for Response {
 		choices: Vec<crate::webhook::ResponseChoice>,
 	) -> anyhow::Result<()> {
 		// Filter only Message outputs (ignore tool calls, reasoning, etc.)
-		let message_outputs: Vec<_> = self
-			.output
-			.iter_mut()
-			.filter_map(|o| match o {
-				OutputItem::Message(msg) => Some(msg),
-				_ => None,
-			})
-			.collect();
+		let message_outputs: Vec<_> = self.output.iter_mut().filter(|o| o.is_message()).collect();
 
 		if message_outputs.len() != choices.len() {
 			anyhow::bail!("webhook response message count mismatch");
@@ -737,11 +733,11 @@ impl ResponseType for Response {
 
 		for (msg, wh) in message_outputs.into_iter().zip(choices) {
 			// Replace message content with webhook's modified content
-			msg.content = vec![Content::OutputText(OutputText {
-				annotations: vec![],
-				logprobs: None,
-				text: wh.message.content.to_string(),
-			})];
+			msg.0["content"] = serde_json::json!([{
+				"type": "output_text",
+				"annotations": [],
+				"text": wh.message.content,
+			}]);
 		}
 		Ok(())
 	}
@@ -750,15 +746,9 @@ impl ResponseType for Response {
 		serde_json::to_vec(&self)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ContentScope, &mut String)) {
 		for o in &mut self.output {
-			if let OutputItem::Message(msg) = o {
-				for c in &mut msg.content {
-					if let Content::OutputText(t) = c {
-						f(&mut t.text);
-					}
-				}
-			}
+			o.visit_text_mut(f);
 		}
 	}
 }
@@ -831,6 +821,10 @@ mod tests {
 	use super::*;
 
 	fn response_with_output(output: Vec<OutputItem>) -> Response {
+		let output = output
+			.into_iter()
+			.map(|o| RawItem(serde_json::to_value(o).expect("output item should serialize")))
+			.collect();
 		Response {
 			id: "resp_123".to_string(),
 			status: "completed".to_string(),

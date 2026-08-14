@@ -104,6 +104,9 @@ func processResponseGuard(ctx PolicyCtx, namespace string, resps []agentgateway.
 				Status: uint32(req.CustomResponse.StatusCode), // nolint:gosec // G115: kubebuilder validation ensures safe for uint32
 			}
 		}
+		for _, scope := range req.Scope {
+			pgReq.Scope = append(pgReq.Scope, processContentScope(scope))
+		}
 		res = append(res, pgReq)
 	}
 

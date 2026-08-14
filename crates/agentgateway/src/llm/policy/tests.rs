@@ -1606,7 +1606,6 @@ fn run_apply_regex(
 	run_apply_regex_scoped(fmt, action, rules, default_content_scope(), input)
 }
 
-/// Same as `run_apply_regex`, but with an explicit guard scope.
 #[cfg(test)]
 fn run_apply_regex_scoped(
 	fmt: ChatFmt,
@@ -1636,7 +1635,6 @@ fn run_apply_regex_scoped(
 	}
 }
 
-/// Same as `run_apply_regex`, but for `Policy::apply_regex_response`.
 #[cfg(test)]
 fn run_apply_regex_response(
 	fmt: ChatFmt,
@@ -1644,23 +1642,34 @@ fn run_apply_regex_response(
 	rules: Vec<RegexRule>,
 	input: serde_json::Value,
 ) -> (GuardrailAction, serde_json::Value) {
+	run_apply_regex_response_scoped(fmt, action, rules, default_content_scope(), input)
+}
+
+#[cfg(test)]
+fn run_apply_regex_response_scoped(
+	fmt: ChatFmt,
+	action: Action,
+	rules: Vec<RegexRule>,
+	scope: Vec<ContentScope>,
+	input: serde_json::Value,
+) -> (GuardrailAction, serde_json::Value) {
 	let rules = RegexRules { action, rules };
 	let rejection = RequestRejection::default();
 	match fmt {
 		ChatFmt::Anthropic => {
 			let mut resp: crate::llm::types::messages::Response = serde_json::from_value(input).unwrap();
-			let action = Policy::apply_regex_response(&mut resp, &rules, &rejection).unwrap();
+			let action = Policy::apply_regex_response(&mut resp, &rules, &rejection, &scope).unwrap();
 			(action, serde_json::to_value(&resp).unwrap())
 		},
 		ChatFmt::Completions => {
 			let mut resp: crate::llm::types::completions::Response =
 				serde_json::from_value(input).unwrap();
-			let action = Policy::apply_regex_response(&mut resp, &rules, &rejection).unwrap();
+			let action = Policy::apply_regex_response(&mut resp, &rules, &rejection, &scope).unwrap();
 			(action, serde_json::to_value(&resp).unwrap())
 		},
 		ChatFmt::Responses => {
 			let mut resp: crate::llm::types::responses::Response = serde_json::from_value(input).unwrap();
-			let action = Policy::apply_regex_response(&mut resp, &rules, &rejection).unwrap();
+			let action = Policy::apply_regex_response(&mut resp, &rules, &rejection, &scope).unwrap();
 			(action, serde_json::to_value(&resp).unwrap())
 		},
 	}
@@ -2430,12 +2439,13 @@ fn prompt_guard_scope_only_on_regex() {
 			{"type": "function_call", "arguments": "{}", "call_id": "call_01", "name": "list_pods"}
 		]
 	}),
+	// adjacent text parts are scanned as one run; a masked run collapses into its last part,
+	// matching request-side masking semantics
 	Some(serde_json::json!({
 		"id": "resp_01", "status": "completed", "model": "gpt-4o",
 		"output": [
 			{"type": "message", "id": "msg_01", "role": "assistant", "status": "completed", "content": [
-				{"type": "output_text", "annotations": [], "logprobs": null, "text": "Intro, all good."},
-				{"type": "output_text", "annotations": [], "logprobs": null, "text": "ssn <SSN>"}
+				{"type": "output_text", "annotations": [], "logprobs": null, "text": "Intro, all good.\nssn <SSN>"}
 			]},
 			{"type": "function_call", "arguments": "{}", "call_id": "call_01", "name": "list_pods"}
 		]
@@ -2455,6 +2465,132 @@ fn test_apply_regex_response_preserves_tool_structure(
 			assert_eq!(actual, expected);
 		},
 		None => assert_eq!(action, GuardrailAction::Reject),
+	}
+}
+
+#[cfg(test)]
+fn anthropic_response_with_tool_use() -> serde_json::Value {
+	serde_json::json!({
+		"id": "msg_01", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
+		"stop_reason": "tool_use", "stop_sequence": null,
+		"usage": {"input_tokens": 10, "output_tokens": 20},
+		"content": [
+			{"type": "text", "text": "Saving the note."},
+			{"type": "tool_use", "id": "toolu_01", "name": "save_note", "input": {"note": "owner ssn 123-45-6789"}}
+		]
+	})
+}
+
+#[cfg(test)]
+fn responses_response_with_tool_items() -> serde_json::Value {
+	serde_json::json!({
+		"id": "resp_01", "status": "completed", "model": "gpt-4o",
+		"output": [
+			{"type": "message", "id": "msg_01", "role": "assistant", "status": "completed", "content": [
+				{"type": "output_text", "annotations": [], "logprobs": null, "text": "done"}
+			]},
+			{"type": "function_call", "arguments": "{\"note\":\"owner ssn 123-45-6789\"}", "call_id": "call_01", "name": "save_note"},
+			{"type": "mcp_call", "id": "mcp_01", "server_label": "hr", "name": "lookup", "arguments": "{}", "output": "owner ssn 123-45-6789"}
+		]
+	})
+}
+
+#[cfg(test)]
+fn completions_response_with_tool_calls() -> serde_json::Value {
+	serde_json::json!({
+		"model": "gpt-4o",
+		"usage": null,
+		"choices": [
+			{"message": {"role": "assistant", "tool_calls": [
+				{"id": "call_01", "type": "function", "function": {"name": "save_note", "arguments": "{\"note\":\"owner ssn 123-45-6789\"}"}}
+			]}}
+		]
+	})
+}
+
+// Model tool calls (and server tool output) in the response are guarded only when the
+// tool scopes are enabled; the default scope leaves them untouched.
+#[cfg(test)]
+#[rstest::rstest]
+#[case::anthropic_masked_when_enabled(
+	ChatFmt::Anthropic,
+	all_scopes(),
+	anthropic_response_with_tool_use(),
+	Expect::Masked(serde_json::json!({
+		"id": "msg_01", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
+		"stop_reason": "tool_use", "stop_sequence": null,
+		"usage": {"input_tokens": 10, "output_tokens": 20},
+		"content": [
+			{"type": "text", "text": "Saving the note."},
+			{"type": "tool_use", "id": "toolu_01", "name": "save_note", "input": {"note": "owner ssn <SSN>"}}
+		]
+	}))
+)]
+#[case::anthropic_untouched_by_default(
+	ChatFmt::Anthropic,
+	default_content_scope(),
+	anthropic_response_with_tool_use(),
+	Expect::Unchanged
+)]
+#[case::responses_masked_when_enabled(
+	ChatFmt::Responses,
+	all_scopes(),
+	responses_response_with_tool_items(),
+	Expect::Masked(serde_json::json!({
+		"id": "resp_01", "status": "completed", "model": "gpt-4o",
+		"output": [
+			{"type": "message", "id": "msg_01", "role": "assistant", "status": "completed", "content": [
+				{"type": "output_text", "annotations": [], "logprobs": null, "text": "done"}
+			]},
+			{"type": "function_call", "arguments": "{\"note\":\"owner ssn <SSN>\"}", "call_id": "call_01", "name": "save_note"},
+			{"type": "mcp_call", "id": "mcp_01", "server_label": "hr", "name": "lookup", "arguments": "{}", "output": "owner ssn <SSN>"}
+		]
+	}))
+)]
+#[case::responses_untouched_by_default(
+	ChatFmt::Responses,
+	default_content_scope(),
+	responses_response_with_tool_items(),
+	Expect::Unchanged
+)]
+#[case::completions_masked_when_enabled(
+	ChatFmt::Completions,
+	all_scopes(),
+	completions_response_with_tool_calls(),
+	Expect::Masked(serde_json::json!({
+		"model": "gpt-4o",
+		"usage": null,
+		"choices": [
+			{"message": {"role": "assistant", "tool_calls": [
+				{"id": "call_01", "type": "function", "function": {"name": "save_note", "arguments": "{\"note\":\"owner ssn <SSN>\"}"}}
+			]}}
+		]
+	}))
+)]
+#[case::completions_untouched_by_default(
+	ChatFmt::Completions,
+	default_content_scope(),
+	completions_response_with_tool_calls(),
+	Expect::Unchanged
+)]
+fn test_apply_regex_response_tool_scope(
+	#[case] fmt: ChatFmt,
+	#[case] scope: Vec<ContentScope>,
+	#[case] input: serde_json::Value,
+	#[case] expected: Expect,
+) {
+	let original = input.clone();
+	let (action, actual) = run_apply_regex_response_scoped(fmt, Action::Mask, ssn_only(), scope, input);
+	match expected {
+		Expect::Masked(expected) => {
+			assert_eq!(action, GuardrailAction::Mask);
+			assert_eq!(actual, expected);
+		},
+		Expect::Unchanged => {
+			assert_eq!(action, GuardrailAction::Allow);
+			assert_eq!(actual, original);
+		},
+		Expect::Rejected => assert_eq!(action, GuardrailAction::Reject),
 	}
 }
 

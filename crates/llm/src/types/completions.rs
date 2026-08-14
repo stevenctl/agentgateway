@@ -253,11 +253,24 @@ impl ResponseType for Response {
 		serde_json::to_vec(&self)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ContentScope, &mut String)) {
 		for c in &mut self.choices {
 			if let Some(text) = &mut c.message.content {
-				f(text);
+				f(ContentScope::Messages, text);
 			}
+			super::visit_json_at(&mut c.message.rest, &["refusal"], ContentScope::Messages, f);
+			super::visit_json_at(
+				&mut c.message.rest,
+				&["tool_calls"],
+				ContentScope::ToolInput,
+				f,
+			);
+			super::visit_json_at(
+				&mut c.message.rest,
+				&["function_call"],
+				ContentScope::ToolInput,
+				f,
+			);
 		}
 	}
 }
