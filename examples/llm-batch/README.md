@@ -2,7 +2,11 @@
 
 This example serves the OpenAI batch API (`/v1/files`, `/v1/batches`) from a Bedrock backend using Bedrock batch inference.
 
-Bedrock without `batch`, and other providers without a native batch API, return 404 for batch paths unless the route is a passthrough route. A path listed explicitly in `ai.routes` skips batch handling entirely.
+Other providers:
+
+- OpenAI passes `/v1/files`, `/v1/batches`, and `/v1/uploads` through.
+- Anthropic passes `/v1/files` and `/v1/messages/batches` through.
+- Everything else, including Bedrock without `batch`, returns 404 unless the route is a passthrough route. A path listed explicitly in `ai.routes` skips batch handling entirely.
 
 Request policies (defaults, overrides, transformations, model aliases, prompts, `promptGuard.request`) and the backend's model apply to each request in a batch as if it were sent directly. In CEL, `llmRequest` is each record's request body and `request` is the upload.
 
@@ -28,11 +32,13 @@ cargo run -- -f examples/llm-batch/config.yaml
 
 ### Limitations
 
-- Records are limited to 32 MiB.
+- Records are limited to 32 MiB. When policies or a backend model apply, Anthropic batch requests are too.
+- With request policies or a backend model, `/v1/uploads` returns 404.
+- OpenAI policies run on file upload, not when submitting an existing file ID. Put `purpose` before the file for non-batch uploads; otherwise a batch-shaped first line classifies the file as a batch.
 - Only file upload, batch creation/retrieval, and result download are supported. Listing, input-file retrieval/deletion, and batch cancellation aren't implemented; to cancel, stop the job in the Bedrock console.
 - `custom_id` must be unique and 1–128 bytes, `stream` is rejected, and tools must use Bedrock-compatible names without namespaces.
 - File IDs identify randomly generated object keys within the configured bucket. Batch IDs encode the job ARN. IDs aren't scoped to the client, and changing the region or bucket invalidates them.
-- Grouped providers must share the same region and bucket. Client requests have no file/job affinity.
+- Grouped providers must share access to the same files and jobs (provider account, and Bedrock region/bucket). Client requests have no file/job affinity.
 - Response guards don't apply to batch downloads.
 - API key backend auth and request-derived AWS session tags or names aren't supported.
 - Add S3 lifecycle rules for cleanup, including `AbortIncompleteMultipartUpload`.

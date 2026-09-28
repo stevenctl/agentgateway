@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use agent_core::strng::Strng;
 use anyhow::{Context, bail, ensure};
 use bytes::{Bytes, BytesMut};
 use futures::stream::BoxStream;
@@ -19,12 +20,14 @@ use crate::proxy::httpproxy::PolicyClient;
 use crate::proxy::{ProxyError, ProxyResponse};
 
 mod bedrock;
+mod observe;
 mod process;
 mod upload;
 mod usage;
 
 pub use bedrock::Config as BedrockConfig;
 pub use process::BatchPolicy;
+use process::DeferredError;
 
 const MAX_RECORD_BYTES: usize = crate::llm::DEFAULT_BUFFER_LIMIT;
 /// Result lines repeat the translated input alongside the output, so they can exceed the input
@@ -32,8 +35,51 @@ const MAX_RECORD_BYTES: usize = crate::llm::DEFAULT_BUFFER_LIMIT;
 const MAX_RESULT_BYTES: usize = 4 * MAX_RECORD_BYTES;
 
 pub enum Batch<'a> {
+	Passthrough(Native, Arc<ModelCatalog>),
 	Bedrock(Box<bedrock::Backend<'a>>),
 	Unavailable(&'static str),
+}
+
+/// Batch API served natively by the provider.
+#[derive(Clone, Copy)]
+pub enum Native {
+	OpenAI,
+	Anthropic,
+}
+
+impl Native {
+	fn provider(self) -> &'static str {
+		match self {
+			Native::OpenAI => "openai",
+			Native::Anthropic => "anthropic",
+		}
+	}
+}
+
+#[allow(clippy::large_enum_variant)]
+pub enum Outcome {
+	Response(Response),
+	/// The request, processed, is proxied to the provider.
+	Passthrough(Request, Passthrough),
+}
+
+pub struct Passthrough {
+	error: Option<DeferredError>,
+	observation: Option<observe::Observation>,
+}
+
+impl Passthrough {
+	/// An error from processing the request body as it was sent.
+	pub fn error(&self) -> Option<ProxyResponse> {
+		self.error.as_ref().and_then(DeferredError::take)
+	}
+
+	pub fn response(self, response: Response) -> Response {
+		match self.observation {
+			Some(observation) => observation.attach(response),
+			None => response,
+		}
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -71,10 +117,22 @@ pub fn classify<'a>(
 		(!matches!(route_type, RouteType::Passthrough | RouteType::Detect))
 			.then_some(Batch::Unavailable(reason))
 	};
+	let processed = policy.is_some_and(|policy| policy.has_request_policies());
+	let native = |native| {
+		Some(Batch::Passthrough(
+			native,
+			client.inputs.model_catalog.clone(),
+		))
+	};
 	match (provider, root) {
-		(AIProvider::OpenAI(_), _) | (AIProvider::Anthropic(_), Root::Files | Root::MessageBatches) => {
-			None
+		(AIProvider::OpenAI(_), Root::Files | Root::Batches) => native(Native::OpenAI),
+		(AIProvider::OpenAI(openai), Root::Uploads) if processed || openai.model_override.is_some() => {
+			Some(Batch::Unavailable(
+				"the uploads API is unavailable with request policies or a backend model",
+			))
 		},
+		(AIProvider::OpenAI(_), Root::Uploads) => native(Native::OpenAI),
+		(AIProvider::Anthropic(_), Root::Files | Root::MessageBatches) => native(Native::Anthropic),
 		// TODO serve Anthropic message batches (/v1/messages/batches) from Bedrock batch inference
 		(AIProvider::Bedrock(provider), Root::Files | Root::Batches) => match &provider.batch {
 			Some(config) => Some(
@@ -94,14 +152,24 @@ impl Batch<'_> {
 		self,
 		req: Request,
 		policy: Option<BatchPolicy>,
-	) -> Result<Response, ProxyResponse> {
+		model: Option<Strng>,
+	) -> Result<Outcome, ProxyResponse> {
 		match self {
+			Batch::Passthrough(native, catalog) => {
+				let observation = observe::Observation::for_request(&req, native.provider(), catalog);
+				let (req, error) = process::process_passthrough(native, req, policy, model).await?;
+				Ok(Outcome::Passthrough(
+					req,
+					Passthrough { error, observation },
+				))
+			},
 			Batch::Bedrock(backend) => route(&*backend, req, policy.as_ref())
 				.await
+				.map(Outcome::Response)
 				.map_err(into_proxy_response),
 			Batch::Unavailable(reason) => {
 				tracing::debug!(reason, "batch unavailable");
-				Ok(unavailable())
+				Ok(Outcome::Response(unavailable()))
 			},
 		}
 	}
@@ -406,7 +474,7 @@ async fn upload_file<B: Backend>(
 	policy: Option<&BatchPolicy>,
 ) -> anyhow::Result<Value> {
 	let (parts, body) = req.into_parts();
-	let multipart = upload::multipart(&parts.headers, body)?;
+	let (multipart, boundary) = upload::multipart(&parts.headers, body)?;
 	let mut sink = WriteRecords {
 		backend,
 		policy,
@@ -414,7 +482,7 @@ async fn upload_file<B: Backend>(
 		upload: None,
 		ids: HashSet::new(),
 	};
-	let summary = upload::walk(multipart, MAX_RECORD_BYTES, &mut sink)
+	let summary = upload::walk(multipart, &boundary, MAX_RECORD_BYTES, true, &mut sink)
 		.await
 		.and_then(|summary| {
 			ensure!(summary.filename.is_some(), "missing file");
@@ -456,6 +524,10 @@ struct WriteRecords<'a, B: Backend> {
 }
 
 impl<B: Backend> upload::Sink for WriteRecords<'_, B> {
+	async fn raw(&mut self, _: Bytes) -> anyhow::Result<()> {
+		Ok(())
+	}
+
 	async fn record(&mut self, url: String, mut record: Map<String, Value>) -> anyhow::Result<()> {
 		let endpoint = Endpoint::from_path(&url)
 			.filter(|_| record.get("method").and_then(Value::as_str) == Some("POST"))
@@ -475,8 +547,7 @@ impl<B: Backend> upload::Sink for WriteRecords<'_, B> {
 		);
 		let body = record.remove("body").unwrap_or_default();
 		ensure!(body["stream"] != true, "batch streaming is unsupported");
-		let body =
-			process::apply_record(self.policy, endpoint, body, Some(self.backend.model())).await?;
+		let body = process::apply_record(self.policy, &url, body, Some(self.backend.model())).await?;
 		let upload = match &mut self.upload {
 			Some(upload) => upload,
 			None => self

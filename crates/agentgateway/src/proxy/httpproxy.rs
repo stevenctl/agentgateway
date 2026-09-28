@@ -2717,6 +2717,7 @@ async fn make_backend_call(
 		log.as_ref(),
 		backend_call.static_target.then_some(&backend_call.target),
 	);
+	let mut batch_passthrough: Option<llm::batch::Passthrough> = None;
 
 	let (mut req, llm_response_policies, llm_request) =
 		if let Some(llm) = &backend_call.backend_policies.llm_provider {
@@ -2725,7 +2726,7 @@ async fn make_backend_call(
 				.get_or_insert_with(|| crate::transport::BufferLimit::new(llm::DEFAULT_BUFFER_LIMIT));
 			// LLM requires CEL execution after the snapshot so we do not clear extensions
 			let mut req = req.take_and_snapshot_without_clearing_extensions(log.as_mut())?;
-			let route_type = resolve_llm_route_type(
+			let mut route_type = resolve_llm_route_type(
 				llm_request_policies.llm.as_deref(),
 				model_route_type,
 				req.uri().path(),
@@ -2744,9 +2745,17 @@ async fn make_backend_call(
 					&req,
 					log.as_deref(),
 				);
-				return Box::pin(batch.handle(req, policy)).await;
+				match Box::pin(batch.handle(req, policy, llm.provider.override_model())).await? {
+					llm::batch::Outcome::Response(response) => return Ok(response),
+					llm::batch::Outcome::Passthrough(processed, passthrough) => {
+						req = processed;
+						route_type = RouteType::Passthrough;
+						batch_passthrough = Some(passthrough);
+					},
+				}
 			}
 			if matches!(route_type, RouteType::Detect | RouteType::Passthrough)
+				&& batch_passthrough.is_none()
 				&& let Some(provider_model) = llm.provider.override_model()
 			{
 				Box::pin(model_router::rewrite_multipart_request_model(
@@ -3119,6 +3128,9 @@ async fn make_backend_call(
 		}
 	});
 	let resp = upstream.call(call).await;
+	if let Some(error) = batch_passthrough.as_ref().and_then(|b| b.error()) {
+		return Err(error);
+	}
 	if let Some(span) = span.as_deref_mut() {
 		match &resp {
 			Ok(response) => span.record_http_client_status(response.status()),
@@ -3151,6 +3163,9 @@ async fn make_backend_call(
 		),
 	});
 	let mut resp = resp?;
+	if let Some(batch) = batch_passthrough {
+		resp = batch.response(resp);
+	}
 	// Protect reads from the actual upstream before any policy buffers, transforms,
 	// or replaces its body. CONNECT tunnels take a separate path above.
 	if resp.status() != StatusCode::SWITCHING_PROTOCOLS

@@ -4,8 +4,10 @@ use serde_json::{Map, Value};
 
 use crate::http::{Body, HeaderMap};
 
-/// Receives the records of a batch input file as it is walked.
 pub(super) trait Sink {
+	/// Content passed through unchanged: multipart framing, other fields, and non-batch files.
+	async fn raw(&mut self, bytes: Bytes) -> anyhow::Result<()>;
+	/// A record from a batch input file.
 	async fn record(&mut self, url: String, record: Map<String, Value>) -> anyhow::Result<()>;
 }
 
@@ -21,41 +23,60 @@ pub(super) struct Summary {
 	pub records: usize,
 }
 
-/// Reads a multipart request body.
 pub(super) fn multipart(
 	headers: &HeaderMap,
 	body: Body,
-) -> anyhow::Result<multer::Multipart<'static>> {
+) -> anyhow::Result<(multer::Multipart<'static>, String)> {
 	let content_type = headers
 		.get(::http::header::CONTENT_TYPE)
 		.context("missing content-type")?
 		.to_str()?;
 	let boundary = multer::parse_boundary(content_type)?;
 	let stream = http_body_util::BodyExt::into_data_stream(body);
-	Ok(multer::Multipart::new(stream, boundary))
+	Ok((multer::Multipart::new(stream, boundary.clone()), boundary))
 }
 
-/// Walks a multipart upload of batch input, splitting the file into records.
+/// Walks a multipart upload, splitting batch input files into records.
+///
+/// A file is batch input if a preceding `purpose` field is `batch`, or otherwise if its first line
+/// is a record. Batch input must contain only records. `always_batch` requires every file to be
+/// batch input.
 pub(super) async fn walk(
 	mut multipart: multer::Multipart<'static>,
+	boundary: &str,
 	max_record: usize,
+	always_batch: bool,
 	sink: &mut impl Sink,
 ) -> anyhow::Result<Summary> {
 	let mut purpose: Option<bool> = None;
 	let mut filename = None;
 	let mut file_bytes = 0;
 	let mut records = 0;
+	let mut unprocessed_file = false;
 	while let Some(mut field) = multipart.next_field().await? {
 		let name = field
 			.name()
 			.context("upload fields must be named")?
 			.to_owned();
+		// Parts are re-emitted with their original headers so the provider sees the same fields.
+		let mut head = format!("--{boundary}\r\n").into_bytes();
+		for (header, value) in field.headers() {
+			head.extend_from_slice(header.as_str().as_bytes());
+			head.extend_from_slice(b": ");
+			head.extend_from_slice(value.as_bytes());
+			head.extend_from_slice(b"\r\n");
+		}
+		head.extend_from_slice(b"\r\n");
+		sink.raw(head.into()).await?;
 		match name.as_str() {
 			"file" => {
 				ensure!(filename.is_none(), "only one file is supported");
-				ensure!(purpose != Some(false), "purpose must be batch");
 				filename = Some(field.file_name().unwrap_or("input.jsonl").to_owned());
+				if always_batch {
+					ensure!(purpose != Some(false), "purpose must be batch");
+				}
 				let mut file = File {
+					batch: if always_batch { Some(true) } else { purpose },
 					line: Vec::new(),
 					max_record,
 					bytes: 0,
@@ -67,6 +88,7 @@ pub(super) async fn walk(
 				file.finish(sink).await?;
 				file_bytes = file.bytes;
 				records = file.records;
+				unprocessed_file = file.batch == Some(false);
 			},
 			"purpose" => {
 				ensure!(purpose.is_none(), "only one purpose is supported");
@@ -76,12 +98,25 @@ pub(super) async fn walk(
 				while let Some(chunk) = field.chunk().await? {
 					let keep = chunk.len().min(limit.saturating_sub(value.len()));
 					value.extend_from_slice(&chunk[..keep]);
+					sink.raw(chunk).await?;
 				}
 				purpose = Some(value == b"batch");
 			},
-			_ => {},
+			_ => {
+				while let Some(chunk) = field.chunk().await? {
+					sink.raw(chunk).await?;
+				}
+			},
 		}
+		sink.raw(Bytes::from_static(b"\r\n")).await?;
 	}
+	// The closing boundary completes a passthrough upload, so a batch file that was not processed
+	// is rejected before it is sent.
+	ensure!(
+		!(unprocessed_file && purpose == Some(true)),
+		"batch input must contain only batch records"
+	);
+	sink.raw(format!("--{boundary}--\r\n").into()).await?;
 	Ok(Summary {
 		batch: purpose == Some(true),
 		filename,
@@ -91,6 +126,8 @@ pub(super) async fn walk(
 }
 
 struct File {
+	/// Whether this is batch input; undecided until the first line when the purpose is unknown.
+	batch: Option<bool>,
 	line: Vec<u8>,
 	max_record: usize,
 	bytes: usize,
@@ -101,6 +138,9 @@ impl File {
 	async fn chunk(&mut self, mut chunk: Bytes, sink: &mut impl Sink) -> anyhow::Result<()> {
 		self.bytes += chunk.len();
 		while !chunk.is_empty() {
+			if self.batch == Some(false) {
+				return sink.raw(chunk).await;
+			}
 			// Inspect at most one record plus CRLF before accepting more input.
 			let available = chunk.len().min(self.max_record + 2 - self.line.len());
 			let newline = chunk[..available].iter().position(|b| *b == b'\n');
@@ -108,9 +148,10 @@ impl File {
 			self.line.extend_from_slice(&chunk.split_to(end));
 			if newline.is_some() {
 				self.take_line(sink).await?;
-			} else {
+			} else if self.line.len() > self.max_record + 1 {
 				// Longer than a record plus a trailing `\r`.
-				ensure!(self.line.len() <= self.max_record + 1, RecordTooLarge);
+				let line = std::mem::take(&mut self.line);
+				self.overflow(line, sink).await?;
 			}
 		}
 		Ok(())
@@ -128,15 +169,30 @@ impl File {
 		let line = std::mem::take(&mut self.line);
 		let content = line.strip_suffix(b"\n").unwrap_or(&line);
 		let content = content.strip_suffix(b"\r").unwrap_or(content);
-		ensure!(content.len() <= self.max_record, RecordTooLarge);
+		if content.len() > self.max_record {
+			return self.overflow(line, sink).await;
+		}
 		let content = trim_line(content);
 		if content.is_empty() {
-			return Ok(());
+			return sink.raw(line.into()).await;
 		}
-		let (url, record) = parse_record(content).context("invalid batch record")?;
+		let record = parse_record(content);
+		if !*self.batch.get_or_insert(record.is_some()) {
+			return sink.raw(line.into()).await;
+		}
+		let Some((url, record)) = record else {
+			anyhow::bail!("invalid batch record");
+		};
 		sink.record(url, record).await?;
 		self.records += 1;
 		Ok(())
+	}
+
+	/// Handles a line too long to be a record: rejected in batch input, passed through otherwise.
+	async fn overflow(&mut self, line: Vec<u8>, sink: &mut impl Sink) -> anyhow::Result<()> {
+		ensure!(self.batch != Some(true), RecordTooLarge);
+		self.batch = Some(false);
+		sink.raw(line.into()).await
 	}
 }
 
@@ -188,10 +244,16 @@ pub(in crate::llm::batch) mod tests {
 
 	#[derive(Default)]
 	struct Collect {
+		raw: Vec<u8>,
 		records: usize,
 	}
 
 	impl Sink for Collect {
+		async fn raw(&mut self, bytes: Bytes) -> anyhow::Result<()> {
+			self.raw.extend_from_slice(&bytes);
+			Ok(())
+		}
+
 		async fn record(&mut self, _: String, _: Map<String, Value>) -> anyhow::Result<()> {
 			self.records += 1;
 			Ok(())
@@ -199,8 +261,17 @@ pub(in crate::llm::batch) mod tests {
 	}
 
 	/// Walks an upload with a 64 byte record limit.
-	async fn walk_fields(fields: &[(&str, &str)]) -> anyhow::Result<Summary> {
-		walk(parse(multipart_body(fields)), 64, &mut Collect::default()).await
+	async fn walk_fields(fields: &[(&str, &str)], always_batch: bool) -> anyhow::Result<Collect> {
+		let mut sink = Collect::default();
+		walk(
+			parse(multipart_body(fields)),
+			"x",
+			64,
+			always_batch,
+			&mut sink,
+		)
+		.await?;
+		Ok(sink)
 	}
 
 	const RECORD: &str = r#"{"url":"/v1/x","body":{}}"#;
@@ -212,18 +283,16 @@ pub(in crate::llm::batch) mod tests {
 			[("purpose", "batch"), ("file", records.as_str())],
 			[("file", records.as_str()), ("purpose", "batch")],
 		] {
-			let summary = walk_fields(&fields).await.unwrap();
-			assert_eq!(summary.records, 2);
-			assert!(summary.batch);
+			assert_eq!(walk_fields(&fields, false).await.unwrap().records, 2);
 		}
 		let malformed = format!("{RECORD}\n{{not json}}");
 		assert!(
-			walk_fields(&[("purpose", "batch"), ("file", &malformed)])
+			walk_fields(&[("purpose", "batch"), ("file", &malformed)], false)
 				.await
 				.is_err()
 		);
 		let oversized = format!(r#"{{"url":"/v1/x","body":{{"pad":"{}"}}}}"#, "y".repeat(64));
-		let error = walk_fields(&[("purpose", "batch"), ("file", &oversized)])
+		let error = walk_fields(&[("purpose", "batch"), ("file", &oversized)], false)
 			.await
 			.err()
 			.unwrap();
@@ -231,29 +300,83 @@ pub(in crate::llm::batch) mod tests {
 	}
 
 	#[tokio::test]
-	async fn other_purposes_are_rejected() {
+	async fn other_files_pass_through() {
+		let pretty = "{\n  \"a\": 1\n}";
+		let long = "x".repeat(100);
+		for (file, purpose_first) in [(RECORD, true), (pretty, false), (long.as_str(), false)] {
+			let fields = if purpose_first {
+				[("purpose", "assistants"), ("file", file)]
+			} else {
+				[("file", file), ("purpose", "assistants")]
+			};
+			let walked = walk_fields(&fields, false).await.unwrap();
+			assert_eq!(walked.records, 0);
+			assert!(String::from_utf8_lossy(&walked.raw).contains(file));
+		}
+	}
+
+	#[tokio::test]
+	async fn other_files_keep_their_part_headers() {
+		let body = "--x\r\ncontent-disposition: form-data; name=\"purpose\"\r\n\r\nassistants\r\n\
+			--x\r\ncontent-disposition: form-data; name=\"file\"; filename*=UTF-8''r%C3%A9sum%C3%A9.txt\r\n\
+			x-custom: 1\r\n\r\nhello\r\n--x--\r\n";
+		let mut sink = Collect::default();
+		walk(parse(body.to_owned()), "x", 64, false, &mut sink)
+			.await
+			.unwrap();
+		assert_eq!(String::from_utf8(sink.raw).unwrap(), body);
+	}
+
+	#[tokio::test]
+	async fn batch_purpose_must_match_the_file() {
 		assert!(
-			walk_fields(&[("purpose", "assistants"), ("file", RECORD)])
+			walk_fields(
+				&[
+					("purpose", "assistants"),
+					("file", RECORD),
+					("purpose", "batch")
+				],
+				false
+			)
+			.await
+			.is_err()
+		);
+		// A late batch purpose rejects a file that was passed through.
+		let file = format!("{{\n{RECORD}");
+		assert!(
+			walk_fields(&[("file", &file), ("purpose", "batch")], false)
 				.await
 				.is_err()
 		);
-		let late = walk_fields(&[("file", RECORD), ("purpose", "assistants")])
-			.await
-			.unwrap();
-		assert!(!late.batch);
+		// When every file must be batch input, another purpose is rejected before the file.
+		assert!(
+			walk_fields(&[("purpose", "assistants"), ("file", RECORD)], true)
+				.await
+				.is_err()
+		);
 	}
 
 	#[tokio::test]
 	async fn oversized_transport_chunks() {
-		let mut file = File {
-			line: Vec::new(),
-			max_record: 64,
-			bytes: 0,
-			records: 0,
-		};
-		let result = file
-			.chunk(Bytes::from("x".repeat(1024)), &mut Collect::default())
-			.await;
-		assert!(result.unwrap_err().is::<RecordTooLarge>());
+		let content = "x".repeat(1024);
+		for batch in [Some(true), None] {
+			let mut file = File {
+				batch,
+				line: Vec::new(),
+				max_record: 64,
+				bytes: 0,
+				records: 0,
+			};
+			let mut sink = Collect::default();
+			let result = file.chunk(Bytes::from(content.clone()), &mut sink).await;
+			if batch == Some(true) {
+				assert!(result.unwrap_err().is::<RecordTooLarge>());
+				assert!(sink.raw.is_empty());
+			} else {
+				result.unwrap();
+				file.finish(&mut sink).await.unwrap();
+				assert_eq!(sink.raw, content.as_bytes());
+			}
+		}
 	}
 }
