@@ -104,6 +104,15 @@ func (m *Model) overlayWith(overlay Model) {
 			m.Tags = append(m.Tags, tag)
 		}
 	}
+	if overlay.Batch != nil {
+		if m.Batch == nil {
+			m.Batch = &BatchPricing{}
+		}
+		m.Batch.Rates.overlayWith(overlay.Batch.Rates)
+		if len(overlay.Batch.Tiers) > 0 {
+			m.Batch.Tiers = overlay.Batch.Tiers
+		}
+	}
 }
 
 // starMatch matches a string pattern where '*' represents any sequence of bytes, including '/'.
@@ -154,13 +163,20 @@ type Provider struct {
 }
 
 type Model struct {
-	Rates Rates    `json:"rates,omitzero"`
-	Tiers []Tier   `json:"tiers,omitempty"`
-	Tags  []string `json:"tags,omitempty"`
+	Rates Rates         `json:"rates,omitzero"`
+	Tiers []Tier        `json:"tiers,omitempty"`
+	Tags  []string      `json:"tags,omitempty"`
+	Batch *BatchPricing `json:"batch,omitempty"`
 }
 
 func (m Model) IsZero() bool {
-	return m.Rates.IsZero() && len(m.Tiers) == 0 && len(m.Tags) == 0
+	return m.Rates.IsZero() && len(m.Tiers) == 0 && len(m.Tags) == 0 && m.Batch == nil
+}
+
+// TODO express batch rates as a multiplier or rule instead of explicit?
+type BatchPricing struct {
+	Rates Rates  `json:"rates,omitzero"`
+	Tiers []Tier `json:"tiers,omitempty"`
 }
 
 type Rates struct {
@@ -234,11 +250,23 @@ func (m Money) validate() error {
 }
 
 func (m *Model) validate() error {
-	if err := m.Rates.validate(); err != nil {
+	if err := validatePricing(m.Rates, m.Tiers); err != nil {
+		return err
+	}
+	if m.Batch != nil {
+		if err := validatePricing(m.Batch.Rates, m.Batch.Tiers); err != nil {
+			return fmt.Errorf("batch: %w", err)
+		}
+	}
+	return nil
+}
+
+func validatePricing(rates Rates, tiers []Tier) error {
+	if err := rates.validate(); err != nil {
 		return err
 	}
 	var prev uint64
-	for i, t := range m.Tiers {
+	for i, t := range tiers {
 		if i > 0 && t.ContextOver <= prev {
 			return fmt.Errorf("tier %d threshold %d not strictly greater than previous %d", i, t.ContextOver, prev)
 		}

@@ -40,6 +40,9 @@ impl Catalog {
 			.flat_map(|p| p.models.values_mut())
 		{
 			m.tiers.retain(|t| t.unknown.is_empty());
+			if let Some(batch) = &mut m.batch {
+				batch.tiers.retain(|t| t.unknown.is_empty());
+			}
 		}
 		self.check(false)
 	}
@@ -60,20 +63,31 @@ impl Catalog {
 			for (mid, m) in &p.models {
 				reject_unknown(&format_args!("{pid}/{mid}"), &m.unknown)?;
 				reject_unknown(&format_args!("{pid}/{mid} rates"), &m.rates.unknown)?;
-				let mut prev: Option<u64> = None;
-				for (i, t) in m.tiers.iter().enumerate() {
-					reject_unknown(&format_args!("{pid}/{mid} tier {i}"), &t.unknown)?;
+				let mut pricing = vec![("", &m.tiers)];
+				if let Some(batch) = &m.batch {
+					reject_unknown(&format_args!("{pid}/{mid} batch"), &batch.unknown)?;
 					reject_unknown(
-						&format_args!("{pid}/{mid} tier {i} rates"),
-						&t.rates.unknown,
+						&format_args!("{pid}/{mid} batch rates"),
+						&batch.rates.unknown,
 					)?;
-					if prev.is_some_and(|p| t.context_over <= p) {
-						anyhow::bail!(
-							"{pid}/{mid}: tier {i} threshold {} not strictly greater than previous",
-							t.context_over
-						);
+					pricing.push(("batch ", &batch.tiers));
+				}
+				for (kind, tiers) in pricing {
+					let mut prev: Option<u64> = None;
+					for (i, t) in tiers.iter().enumerate() {
+						reject_unknown(&format_args!("{pid}/{mid} {kind}tier {i}"), &t.unknown)?;
+						reject_unknown(
+							&format_args!("{pid}/{mid} {kind}tier {i} rates"),
+							&t.rates.unknown,
+						)?;
+						if prev.is_some_and(|p| t.context_over <= p) {
+							anyhow::bail!(
+								"{pid}/{mid}: {kind}tier {i} threshold {} not strictly greater than previous",
+								t.context_over
+							);
+						}
+						prev = Some(t.context_over);
 					}
-					prev = Some(t.context_over);
 				}
 			}
 		}
@@ -92,6 +106,13 @@ impl Catalog {
 							bm.tiers = om.tiers;
 						}
 						bm.tags.extend(om.tags);
+						if let Some(ob) = om.batch {
+							let batch = bm.batch.get_or_insert_default();
+							batch.rates = batch.rates.overlay(&ob.rates);
+							if !ob.tiers.is_empty() {
+								batch.tiers = ob.tiers;
+							}
+						}
 						bm
 					},
 					None => om,
@@ -165,6 +186,26 @@ pub struct Model {
 	/// Freeform capability/routing tags for this model.
 	#[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
 	pub tags: BTreeSet<String>,
+	/// Batch API pricing. Synchronous rates are not used for batches.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub batch: Option<BatchPricing>,
+	/// Fields not understood by this version.
+	#[serde(flatten, skip_serializing)]
+	#[cfg_attr(feature = "schema", schemars(skip))]
+	pub unknown: Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct BatchPricing {
+	/// Base batch pricing rates.
+	#[serde(default, skip_serializing_if = "Rates::is_empty")]
+	pub rates: Rates,
+	/// Context-length pricing tiers that override the base batch rates.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub tiers: Vec<Tier>,
 	/// Fields not understood by this version.
 	#[serde(flatten, skip_serializing)]
 	#[cfg_attr(feature = "schema", schemars(skip))]
@@ -373,15 +414,26 @@ impl Model {
 	}
 
 	pub(super) fn effective_rates(&self, context_tokens: u64) -> Rates {
-		match self
-			.tiers
-			.iter()
-			.filter(|t| context_tokens > t.context_over)
-			.max_by_key(|t| t.context_over)
-		{
-			Some(tier) => self.rates.overlay(&tier.rates),
-			None => self.rates.clone(),
-		}
+		effective_rates(&self.rates, &self.tiers, context_tokens)
+	}
+
+	pub(super) fn effective_batch_rates(&self, context_tokens: u64) -> Rates {
+		self
+			.batch
+			.as_ref()
+			.map(|b| effective_rates(&b.rates, &b.tiers, context_tokens))
+			.unwrap_or_default()
+	}
+}
+
+fn effective_rates(rates: &Rates, tiers: &[Tier], context_tokens: u64) -> Rates {
+	match tiers
+		.iter()
+		.filter(|t| context_tokens > t.context_over)
+		.max_by_key(|t| t.context_over)
+	{
+		Some(tier) => rates.overlay(&tier.rates),
+		None => rates.clone(),
 	}
 }
 

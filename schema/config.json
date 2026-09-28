@@ -617,6 +617,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "batch": {
+          "description": "Batch API pricing. Synchronous rates are not used for batches.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchPricing"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -737,6 +748,23 @@
         "contextOver",
         "rates"
       ]
+    },
+    "BatchPricing": {
+      "type": "object",
+      "properties": {
+        "rates": {
+          "description": "Base batch pricing rates.",
+          "$ref": "#/$defs/Rates"
+        },
+        "tiers": {
+          "description": "Context-length pricing tiers that override the base batch rates.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Tier"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "Config": {
       "type": "object",

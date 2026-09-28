@@ -150,6 +150,15 @@ impl ModelCatalog {
 	}
 
 	pub fn project(&self, info: &LLMInfo) -> CostProjection {
+		self.project_with(info, Pricing::Standard)
+	}
+
+	/// Projects cost at batch API rates.
+	pub fn project_batch(&self, info: &LLMInfo) -> CostProjection {
+		self.project_with(info, Pricing::Batch)
+	}
+
+	fn project_with(&self, info: &LLMInfo, pricing: Pricing) -> CostProjection {
 		let provider = info.request.provider.as_str();
 		let state = self.state.load();
 		let snapshot = &state.snapshot;
@@ -160,16 +169,19 @@ impl ModelCatalog {
 				&info.response,
 				info.request.cache_convention,
 				false,
+				pricing,
 			);
 			if projection.status != CostLookupStatus::Missing {
 				return projection;
 			}
 		}
-		snapshot.project(
+		snapshot.project_with_missing_trace(
 			provider,
 			info.request.request_model.as_str(),
 			&info.response,
 			info.request.cache_convention,
+			true,
+			pricing,
 		)
 	}
 }
@@ -299,6 +311,7 @@ impl CatalogSnapshot {
 		}
 	}
 
+	#[cfg(test)]
 	fn project(
 		&self,
 		provider: &str,
@@ -306,7 +319,7 @@ impl CatalogSnapshot {
 		resp: &LLMResponse,
 		convention: CacheTokenConvention,
 	) -> CostProjection {
-		self.project_with_missing_trace(provider, model, resp, convention, true)
+		self.project_with_missing_trace(provider, model, resp, convention, true, Pricing::Standard)
 	}
 
 	fn project_with_missing_trace(
@@ -316,6 +329,7 @@ impl CatalogSnapshot {
 		resp: &LLMResponse,
 		convention: CacheTokenConvention,
 		trace_missing: bool,
+		pricing: Pricing,
 	) -> CostProjection {
 		let Some(catalog) = self.catalog.as_ref() else {
 			crate::proxy::dtrace::pol_event!(
@@ -351,7 +365,10 @@ impl CatalogSnapshot {
 		// Tier selection must be invariant to cache repricing below: cache tokens
 		// may move between input and their cache buckets, but their sum is stable.
 		let context_tokens = provisional_usage.context_tokens();
-		let rates = entry.effective_rates(context_tokens);
+		let rates = match pricing {
+			Pricing::Standard => entry.effective_rates(context_tokens),
+			Pricing::Batch => entry.effective_batch_rates(context_tokens),
+		};
 		if rates.is_empty() {
 			crate::proxy::dtrace::pol_event!(
 				TRACE_POLICY_KIND,
@@ -415,6 +432,12 @@ pub struct ModelCatalogModels {
 pub struct ModelCatalogProviderModels {
 	pub provider: String,
 	pub models: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Pricing {
+	Standard,
+	Batch,
 }
 
 #[derive(Debug, Clone)]
@@ -1177,6 +1200,54 @@ mod tests {
 		assert!(
 			projection.cost.is_none(),
 			"provider model was found, so request model fallback must not hide unpriced rates"
+		);
+	}
+
+	#[test]
+	fn batch_projection_uses_batch_rates_only() {
+		let catalog = model_catalog(
+			r#"{"providers":{"openai":{"models":{
+			"my-model":{"rates":{"input":"2","output":"8"},
+				"batch":{"rates":{"input":"1","output":"4"}}},
+			"standard-only":{"rates":{"input":"2","output":"8"}}
+		}}}}"#,
+		);
+		let info = test_llm_info("my-model", Some("unknown-provider-model"));
+		let standard = catalog.project(&info).cost.unwrap().total();
+		let batch = catalog.project_batch(&info).cost.unwrap().total();
+		assert_eq!(standard, batch * Decimal::from(2));
+		let unpriced = catalog.project_batch(&test_llm_info("my-model", Some("standard-only")));
+		assert_eq!(unpriced.status, CostLookupStatus::Unpriced);
+		assert!(unpriced.cost.is_none());
+	}
+
+	#[test]
+	fn batch_overlay_merges_rates_and_prices_tiers() {
+		let base = model::from_json(
+			r#"{"providers":{"openai":{"models":{"my-model":{
+			"rates":{"input":"10"},
+			"batch":{"rates":{"input":"1","output":"0"},
+				"tiers":[{"contextOver":1000,"rates":{"input":"2"}}]}
+		}}}}}"#,
+		)
+		.unwrap();
+		let overlay = model::from_json(
+			r#"{"providers":{"openai":{"models":{"my-model":{
+			"batch":{"rates":{"cacheRead":"0.2"}}
+		}}}}}"#,
+		)
+		.unwrap();
+		let catalog = model_catalog(&serde_json::to_string(&base.override_with(overlay)).unwrap());
+		let mut info = test_llm_info("my-model", None);
+		info.response = LLMResponse {
+			input_tokens: Some(1500),
+			cached_input_tokens: Some(1000),
+			output_tokens: Some(10),
+			..Default::default()
+		};
+		assert_eq!(
+			catalog.project_batch(&info).cost.unwrap().total(),
+			Decimal::new(12, 4)
 		);
 	}
 

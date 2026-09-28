@@ -72,6 +72,24 @@ func TestOverlayWithReplacesTiersWhenOverlayHasThem(t *testing.T) {
 	}
 }
 
+func TestBatchPricingOverlayAndValidation(t *testing.T) {
+	model := Model{
+		Rates: Rates{Input: "2", Output: "8"},
+		Batch: &BatchPricing{Rates: Rates{Input: "1", Output: "4"}},
+	}
+	model.overlayWith(Model{Batch: &BatchPricing{
+		Rates: Rates{CacheRead: "0.25"},
+		Tiers: []Tier{{ContextOver: 200000, Rates: Rates{Input: "2"}}},
+	}})
+	if model.Rates.Input != "2" || model.Batch.Rates.Input != "1" || model.Batch.Rates.CacheRead != "0.25" || len(model.Batch.Tiers) != 1 {
+		t.Fatalf("unexpected pricing after overlay: %+v, batch: %+v", model, model.Batch)
+	}
+	model.Batch.Tiers = append(model.Batch.Tiers, Tier{ContextOver: 100000})
+	if err := model.validate(); err == nil {
+		t.Fatal("accepted decreasing batch tier thresholds")
+	}
+}
+
 func TestOverlayCatalog(t *testing.T) {
 	base := ModelCatalog{Providers: map[string]Provider{
 		"openai": {Models: map[string]Model{

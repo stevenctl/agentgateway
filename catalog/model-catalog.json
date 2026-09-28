@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "generatedAt": "2026-10-01T08:39:53Z"
+    "generatedAt": "2026-10-01T18:46:20Z"
   },
   "providers": {
     "anthropic": {
@@ -36,7 +36,15 @@
           },
           "tags": [
             "legacy_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "0.5",
+              "output": "2.5",
+              "cacheRead": "0.05",
+              "cacheWrite": "0.625"
+            }
+          }
         },
         "claude-haiku-4-5-20251001": {
           "rates": {
@@ -47,7 +55,15 @@
           },
           "tags": [
             "legacy_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "0.5",
+              "output": "2.5",
+              "cacheRead": "0.05",
+              "cacheWrite": "0.625"
+            }
+          }
         },
         "claude-opus-4-5": {
           "rates": {
@@ -81,7 +97,15 @@
           "tags": [
             "legacy_thinking",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "2.5",
+              "output": "12.5",
+              "cacheRead": "0.25",
+              "cacheWrite": "3.125"
+            }
+          }
         },
         "claude-opus-4-7": {
           "rates": {
@@ -159,7 +183,15 @@
           "tags": [
             "legacy_thinking",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.5",
+              "output": "7.5",
+              "cacheRead": "0.15",
+              "cacheWrite": "1.875"
+            }
+          }
         },
         "claude-sonnet-5": {
           "rates": {
@@ -377,7 +409,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "2.75",
+              "output": "13.75"
+            }
+          }
         },
         "anthropic.claude-opus-4-7": {
           "rates": {
@@ -455,7 +493,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.65",
+              "output": "8.25"
+            }
+          }
         },
         "anthropic.claude-sonnet-5": {
           "rates": {
@@ -545,7 +589,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "2.75",
+              "output": "13.75"
+            }
+          }
         },
         "au.anthropic.claude-opus-4-7": {
           "rates": {
@@ -623,7 +673,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.65",
+              "output": "8.25"
+            }
+          }
         },
         "au.anthropic.claude-sonnet-5": {
           "rates": {
@@ -810,7 +866,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "2.75",
+              "output": "13.75"
+            }
+          }
         },
         "eu.anthropic.claude-opus-4-7": {
           "rates": {
@@ -893,7 +955,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.65",
+              "output": "8.25"
+            }
+          }
         },
         "eu.anthropic.claude-sonnet-5": {
           "rates": {
@@ -991,7 +1059,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "2.5",
+              "output": "12.5"
+            }
+          }
         },
         "global.anthropic.claude-opus-4-7": {
           "rates": {
@@ -1074,7 +1148,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.5",
+              "output": "7.5"
+            }
+          }
         },
         "global.anthropic.claude-sonnet-5": {
           "rates": {
@@ -1512,7 +1592,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.65",
+              "output": "8.25"
+            }
+          }
         },
         "jp.anthropic.claude-sonnet-5": {
           "rates": {
@@ -2386,7 +2472,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "2.75",
+              "output": "13.75"
+            }
+          }
         },
         "us.anthropic.claude-opus-4-7": {
           "rates": {
@@ -2469,7 +2561,13 @@
             "legacy_thinking",
             "runtime",
             "adaptive_thinking"
-          ]
+          ],
+          "batch": {
+            "rates": {
+              "input": "1.65",
+              "output": "8.25"
+            }
+          }
         },
         "us.anthropic.claude-sonnet-5": {
           "rates": {
@@ -6313,6 +6411,27 @@
             "input": "2",
             "output": "8",
             "cacheRead": "0.5"
+          },
+          "batch": {
+            "rates": {
+              "input": "1",
+              "output": "4",
+              "cacheRead": "0.25"
+            }
+          }
+        },
+        "gpt-4.1-2025-04-14": {
+          "rates": {
+            "input": "2",
+            "output": "8",
+            "cacheRead": "0.5"
+          },
+          "batch": {
+            "rates": {
+              "input": "1",
+              "output": "4",
+              "cacheRead": "0.25"
+            }
           }
         },
         "gpt-4.1-mini": {
@@ -6320,6 +6439,55 @@
             "input": "0.4",
             "output": "1.6",
             "cacheRead": "0.1"
+          },
+          "batch": {
+            "rates": {
+              "input": "0.2",
+              "output": "0.8",
+              "cacheRead": "0.05"
+            }
+          }
+        },
+        "gpt-4.1-mini-2025-04-14": {
+          "rates": {
+            "input": "0.4",
+            "output": "1.6",
+            "cacheRead": "0.1"
+          },
+          "batch": {
+            "rates": {
+              "input": "0.2",
+              "output": "0.8",
+              "cacheRead": "0.05"
+            }
+          }
+        },
+        "gpt-4.1-nano": {
+          "rates": {
+            "input": "0.1",
+            "output": "0.4",
+            "cacheRead": "0.025"
+          },
+          "batch": {
+            "rates": {
+              "input": "0.05",
+              "output": "0.2",
+              "cacheRead": "0.0125"
+            }
+          }
+        },
+        "gpt-4.1-nano-2025-04-14": {
+          "rates": {
+            "input": "0.1",
+            "output": "0.4",
+            "cacheRead": "0.025"
+          },
+          "batch": {
+            "rates": {
+              "input": "0.05",
+              "output": "0.2",
+              "cacheRead": "0.0125"
+            }
           }
         },
         "gpt-4o": {

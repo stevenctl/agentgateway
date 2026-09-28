@@ -38,6 +38,27 @@
 |`config.modelCatalog[].inline.providers.*.models.*.tiers[].rates.outputAudio`|string|Cost per 1M output audio tokens. Falls back to the output rate if unset.|
 |`config.modelCatalog[].inline.providers.*.models.*.tiers[].rates.perPage`|string|Cost per page, for document/OCR models.|
 |`config.modelCatalog[].inline.providers.*.models.*.tags`|[]string|Freeform capability/routing tags for this model.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch`|object|Batch API pricing. Synchronous rates are not used for batches.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates`|object|Base batch pricing rates.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.input`|string|Cost per 1M input (prompt) tokens.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.output`|string|Cost per 1M output (completion) tokens.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.cacheRead`|string|Cost per 1M tokens read from cache.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.cacheWrite`|string|Cost per 1M tokens written to cache.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.reasoning`|string|Cost per 1M reasoning tokens. Falls back to the output rate if unset.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.inputAudio`|string|Cost per 1M input audio tokens. Falls back to the input rate if unset.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.outputAudio`|string|Cost per 1M output audio tokens. Falls back to the output rate if unset.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.rates.perPage`|string|Cost per page, for document/OCR models.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers`|[]object|Context-length pricing tiers that override the base batch rates.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].contextOver`|integer|Context-token threshold above which this tier's rates apply.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates`|object|Pricing rates for this tier, overlaid on the base model rates.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.input`|string|Cost per 1M input (prompt) tokens.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.output`|string|Cost per 1M output (completion) tokens.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.cacheRead`|string|Cost per 1M tokens read from cache.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.cacheWrite`|string|Cost per 1M tokens written to cache.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.reasoning`|string|Cost per 1M reasoning tokens. Falls back to the output rate if unset.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.inputAudio`|string|Cost per 1M input audio tokens. Falls back to the input rate if unset.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.outputAudio`|string|Cost per 1M output audio tokens. Falls back to the output rate if unset.|
+|`config.modelCatalog[].inline.providers.*.models.*.batch.tiers[].rates.perPage`|string|Cost per page, for document/OCR models.|
 |`config.database`|object|Primary database used by local runtime features.|
 |`config.database.url`|string|Connection URL for the request log database. A postgres:// or postgresql:// URL uses Postgres; any other value is treated as a SQLite database.|
 |`config.database.maxConnections`|integer|Maximum number of connections to open in this database's connection pool. Defaults to 5.<br>When the request log and config stores have matching database settings, they share one pool<br>with this limit.|
