@@ -9221,9 +9221,19 @@
           "description": "Which endpoint to prefer (Runtime vs Mantle).",
           "$ref": "#/$defs/BedrockEndpointPreference",
           "default": "runtimePreferred"
+        },
+        "batch": {
+          "description": "Serve batch APIs using Bedrock batch inference. Requires a configured model.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Config2"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "additionalProperties": false,
       "required": [
         "region"
       ]
@@ -9235,6 +9245,24 @@
         "mantlePreferred",
         "mantleOnly",
         "runtimeOnly"
+      ]
+    },
+    "Config2": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "description": "S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.",
+          "type": "string"
+        },
+        "roleArn": {
+          "description": "IAM role Bedrock assumes to read input from and write output to the bucket.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bucket",
+        "roleArn"
       ]
     },
     "AzureProvider": {

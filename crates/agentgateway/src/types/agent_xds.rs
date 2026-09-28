@@ -1936,7 +1936,7 @@ pub(crate) fn backend_with_policies_from_proto(
 							})
 						},
 						Some(provider::Provider::Bedrock(bedrock)) => {
-							AIProvider::bedrock(llm::bedrock::Provider {
+							let mut provider = llm::BedrockProvider::new(llm::bedrock::Provider {
 								model_override: bedrock.model.as_deref().map(strng::new),
 								region: strng::new(&bedrock.region),
 								guardrail_identifier: bedrock.guardrail_identifier.as_deref().map(strng::new),
@@ -1953,7 +1953,15 @@ pub(crate) fn backend_with_policies_from_proto(
 									},
 									_ => llm::bedrock::BedrockEndpointPreference::RuntimePreferred,
 								},
-							})
+							});
+							provider.batch = bedrock
+								.batch
+								.as_ref()
+								.map(|batch| llm::batch::BedrockConfig {
+									bucket: batch.bucket.clone(),
+									role_arn: batch.role_arn.clone(),
+								});
+							AIProvider::Bedrock(provider)
 						},
 						Some(provider::Provider::Azure(azure)) => {
 							let resource_type = match azure.resource_type() {

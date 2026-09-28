@@ -6936,6 +6936,9 @@
 |`binds[].listeners[].routes[].backends[].ai.provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`binds[].listeners[].routes[].backends[].ai.provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`binds[].listeners[].routes[].backends[].ai.provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`binds[].listeners[].routes[].backends[].ai.provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`binds[].listeners[].routes[].backends[].ai.provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`binds[].listeners[].routes[].backends[].ai.provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`binds[].listeners[].routes[].backends[].ai.provider.azure`|object||
 |`binds[].listeners[].routes[].backends[].ai.provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`binds[].listeners[].routes[].backends[].ai.provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -10902,6 +10905,9 @@
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.azure`|object||
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -28692,6 +28698,9 @@
 |`backends[].ai.provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`backends[].ai.provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`backends[].ai.provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`backends[].ai.provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`backends[].ai.provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`backends[].ai.provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`backends[].ai.provider.azure`|object||
 |`backends[].ai.provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`backends[].ai.provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -32658,6 +32667,9 @@
 |`backends[].ai.groups[].providers[].provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`backends[].ai.groups[].providers[].provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`backends[].ai.groups[].providers[].provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`backends[].ai.groups[].providers[].provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`backends[].ai.groups[].providers[].provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`backends[].ai.groups[].providers[].provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`backends[].ai.groups[].providers[].provider.azure`|object||
 |`backends[].ai.groups[].providers[].provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`backends[].ai.groups[].providers[].provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -47306,6 +47318,9 @@
 |`routeGroups[].routes[].backends[].ai.provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`routeGroups[].routes[].backends[].ai.provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`routeGroups[].routes[].backends[].ai.provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`routeGroups[].routes[].backends[].ai.provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`routeGroups[].routes[].backends[].ai.provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`routeGroups[].routes[].backends[].ai.provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`routeGroups[].routes[].backends[].ai.provider.azure`|object||
 |`routeGroups[].routes[].backends[].ai.provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`routeGroups[].routes[].backends[].ai.provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -51272,6 +51287,9 @@
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.azure`|object||
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -68591,6 +68609,9 @@
 |`routes[].backends[].ai.provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`routes[].backends[].ai.provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`routes[].backends[].ai.provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`routes[].backends[].ai.provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`routes[].backends[].ai.provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`routes[].backends[].ai.provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`routes[].backends[].ai.provider.azure`|object||
 |`routes[].backends[].ai.provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`routes[].backends[].ai.provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|
@@ -72557,6 +72578,9 @@
 |`routes[].backends[].ai.groups[].providers[].provider.bedrock.guardrailIdentifier`|string|Identifier of the Bedrock guardrail to apply.|
 |`routes[].backends[].ai.groups[].providers[].provider.bedrock.guardrailVersion`|string|Version of the Bedrock guardrail to apply.|
 |`routes[].backends[].ai.groups[].providers[].provider.bedrock.endpointPreference`|enum|Which endpoint to prefer (Runtime vs Mantle).<br>Possible values: `runtimePreferred`, `mantlePreferred`, `mantleOnly`, `runtimeOnly`.|
+|`routes[].backends[].ai.groups[].providers[].provider.bedrock.batch`|object|Serve batch APIs using Bedrock batch inference. Requires a configured model.|
+|`routes[].backends[].ai.groups[].providers[].provider.bedrock.batch.bucket`|string|S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.|
+|`routes[].backends[].ai.groups[].providers[].provider.bedrock.batch.roleArn`|string|IAM role Bedrock assumes to read input from and write output to the bucket.|
 |`routes[].backends[].ai.groups[].providers[].provider.azure`|object||
 |`routes[].backends[].ai.groups[].providers[].provider.azure.model`|string|Model ID to send to Azure, overriding the model in the client request.|
 |`routes[].backends[].ai.groups[].providers[].provider.azure.resourceName`|string|The Azure resource name used to construct the endpoint host.|

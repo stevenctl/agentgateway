@@ -782,8 +782,30 @@ impl Policy {
 		wildcard.unwrap_or(crate::llm::RouteType::Completions)
 	}
 
+	pub fn has_explicit_route(&self, path: &str) -> bool {
+		self
+			.routes
+			.keys()
+			.any(|suffix| suffix.as_str() != "*" && path.ends_with(suffix.as_str()))
+	}
+
 	pub fn has_request_body_mutations(&self) -> bool {
 		self.defaults.is_some() || self.overrides.is_some() || self.transformations.is_some()
+	}
+
+	pub fn has_request_guards(&self) -> bool {
+		self
+			.prompt_guard
+			.as_ref()
+			.is_some_and(|guard| !guard.request.is_empty())
+	}
+
+	/// Whether the policy changes or inspects individual requests.
+	pub fn has_request_policies(&self) -> bool {
+		self.has_request_guards()
+			|| self.has_request_body_mutations()
+			|| !self.model_aliases.is_empty()
+			|| self.prompts.is_some()
 	}
 
 	pub fn unmarshal_request<T: RequestType + DeserializeOwned>(

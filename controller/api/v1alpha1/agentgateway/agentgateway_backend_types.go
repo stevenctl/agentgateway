@@ -590,6 +590,7 @@ const (
 	BedrockEndpointPreferenceRuntimeOnly BedrockEndpointPreference = "RuntimeOnly"
 )
 
+// +kubebuilder:validation:XValidation:rule="!has(self.batch) || has(self.model)",message="Bedrock batch requires a configured model"
 type BedrockConfig struct {
 	BedrockSettings `json:",inline"`
 
@@ -597,6 +598,20 @@ type BedrockConfig struct {
 	// If unset, the model name is taken from the request.
 	// +optional
 	Model *ShortString `json:"model,omitempty"`
+
+	// Serve batch APIs using Bedrock batch inference.
+	// +optional
+	Batch *BedrockBatchConfig `json:"batch,omitempty"`
+}
+
+type BedrockBatchConfig struct {
+	// S3 bucket in the provider's region. Objects use the agentgateway-batch/ prefix.
+	// +required
+	Bucket TinyString `json:"bucket"`
+
+	// IAM role Bedrock assumes to read input and write results in the bucket.
+	// +required
+	RoleArn LongString `json:"roleArn"`
 }
 
 type AWSGuardrailConfig struct {

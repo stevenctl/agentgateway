@@ -37,6 +37,7 @@ pub use agent_llm::{azure, bedrock, vertex};
 /// Default body buffer limit once a request enters LLM processing.
 pub const DEFAULT_BUFFER_LIMIT: usize = 32 * 1024 * 1024;
 
+pub mod batch;
 pub mod catalog;
 pub mod discovery;
 pub mod policy;
@@ -152,10 +153,14 @@ pub enum AIProvider {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BedrockProvider {
 	#[serde(flatten)]
 	pub provider: bedrock::Provider,
+	/// Serve batch APIs using Bedrock batch inference. Requires a configured model.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub batch: Option<batch::BedrockConfig>,
 	#[serde(skip)]
 	pub source_credentials_cache: crate::http::auth::aws::AwsCredentialsCache,
 	#[serde(skip)]
@@ -166,20 +171,10 @@ impl BedrockProvider {
 	pub fn new(provider: bedrock::Provider) -> Self {
 		Self {
 			provider,
+			batch: None,
 			source_credentials_cache: Default::default(),
 			assume_role_cache: Default::default(),
 		}
-	}
-}
-
-#[cfg(feature = "schema")]
-impl schemars::JsonSchema for BedrockProvider {
-	fn schema_name() -> std::borrow::Cow<'static, str> {
-		std::borrow::Cow::Borrowed("BedrockProvider")
-	}
-
-	fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-		<bedrock::Provider as schemars::JsonSchema>::json_schema(generator)
 	}
 }
 

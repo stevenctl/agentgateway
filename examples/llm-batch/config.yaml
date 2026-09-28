@@ -1,0 +1,15 @@
+# Replace the model, region, bucket, and role with your AWS resources.
+binds:
+- port: 3000
+  listeners:
+  - routes:
+    - backends:
+      - ai:
+          name: bedrock-batch
+          provider:
+            bedrock:
+              model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+              region: us-west-2
+              batch:
+                bucket: my-batch-bucket
+                roleArn: arn:aws:iam::123456789012:role/AgentgatewayBedrockBatch

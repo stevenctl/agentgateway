@@ -1883,11 +1883,16 @@ message AIBackend {
     optional string model = 1;
   }
   message Bedrock {
+    message Batch {
+      string bucket = 1;
+      string role_arn = 2;
+    }
     optional string model = 1;
     string region = 2;
     optional string guardrail_identifier = 3;
     optional string guardrail_version = 4;
     BedrockEndpointPreference endpoint_preference = 5;
+    Batch batch = 6;
   }
   enum BedrockEndpointPreference {
     BEDROCK_ENDPOINT_PREFERENCE_RUNTIME_PREFERRED = 0;

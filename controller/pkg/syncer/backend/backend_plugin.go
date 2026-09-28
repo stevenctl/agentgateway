@@ -581,6 +581,9 @@ func translateLLMProvider(ctx plugins.PolicyCtx, namespace string, llm *agentgat
 				EndpointPreference:  endpointPreference,
 			},
 		}
+		if batch := llm.Bedrock.Batch; batch != nil {
+			provider.GetBedrock().Batch = &api.AIBackend_Bedrock_Batch{Bucket: batch.Bucket, RoleArn: batch.RoleArn}
+		}
 	} else if llm.Custom != nil {
 		formats, err := plugins.TranslateCustomProviderFormats(llm.Custom.Formats)
 		if err != nil {

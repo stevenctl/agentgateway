@@ -532,6 +532,10 @@ impl crate::store::RequestPolicyTrait for BudgetPolicy {
 		log: &mut crate::telemetry::log::RequestLog,
 		req: &mut crate::http::Request,
 	) -> Result<crate::http::PolicyResponse, crate::proxy::ProxyResponse> {
+		// Batch reads fetch results of jobs already admitted at submission.
+		if crate::llm::batch::is_read(req) {
+			return Ok(crate::http::PolicyResponse::default());
+		}
 		let Some(budgets) = req.extensions_mut().remove::<MatchedBudgets>() else {
 			return Ok(crate::http::PolicyResponse::default());
 		};

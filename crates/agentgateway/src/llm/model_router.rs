@@ -580,7 +580,7 @@ fn api_key_model_authorization_denied_response() -> Response {
 	)
 }
 
-fn request_body_too_large_response() -> Response {
+pub(crate) fn request_body_too_large_response() -> Response {
 	llm_error_response(
 		::http::StatusCode::PAYLOAD_TOO_LARGE,
 		"LLM request body exceeded the buffer limit",
@@ -588,7 +588,11 @@ fn request_body_too_large_response() -> Response {
 	)
 }
 
-fn llm_error_response(status: ::http::StatusCode, message: &str, code: &str) -> Response {
+pub(crate) fn llm_error_response(
+	status: ::http::StatusCode,
+	message: &str,
+	code: &str,
+) -> Response {
 	::http::Response::builder()
 		.status(status)
 		.header(::http::header::CONTENT_TYPE, "application/json")

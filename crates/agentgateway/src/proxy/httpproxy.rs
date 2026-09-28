@@ -2730,6 +2730,22 @@ async fn make_backend_call(
 				model_route_type,
 				req.uri().path(),
 			);
+			if let Some(batch) = llm::batch::classify(
+				req.uri().path(),
+				&llm.provider,
+				llm_request_policies.llm.as_deref(),
+				route_type,
+				&policy_client,
+				backend_call.backend_policies.backend_auth.as_ref(),
+			) {
+				let policy = llm::batch::BatchPolicy::new(
+					llm_request_policies.llm.as_ref(),
+					&policy_client,
+					&req,
+					log.as_deref(),
+				);
+				return Box::pin(batch.handle(req, policy)).await;
+			}
 			if matches!(route_type, RouteType::Detect | RouteType::Passthrough)
 				&& let Some(provider_model) = llm.provider.override_model()
 			{
