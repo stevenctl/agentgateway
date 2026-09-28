@@ -745,6 +745,15 @@ impl Policy {
 		None
 	}
 
+	pub fn apply_model_alias(&self, req: &mut dyn RequestType) {
+		if req.supports_model()
+			&& let Some(model) = req.model()
+			&& let Some(aliased) = self.resolve_model_alias(model.as_str())
+		{
+			*model = aliased.to_string();
+		}
+	}
+
 	pub fn apply_prompt_enrichment(&self, chat: &mut dyn RequestType) {
 		if let Some(prompts) = &self.prompts {
 			if !prompts.prepend.is_empty() {
@@ -798,19 +807,20 @@ impl Policy {
 		v: serde_json::Value,
 		log: &mut Option<&mut RequestLog>,
 	) -> Result<T, AIError> {
-		let v = self.apply_request_body_mutations(v, log)?;
+		let snapshot = log.as_ref().and_then(|log| log.request_snapshot.as_deref());
+		let v = self.apply_request_body_mutations(v, snapshot)?;
 		serde_json::from_value(v).map_err(|err| AIError::RequestParsing(T::input_format(), err))
 	}
 
 	pub fn apply_request_body_mutations(
 		&self,
 		v: serde_json::Value,
-		log: &mut Option<&mut RequestLog>,
+		snapshot: Option<&cel::RequestSnapshot>,
 	) -> Result<serde_json::Value, AIError> {
 		if !self.has_request_body_mutations() {
 			return Ok(v);
 		}
-		let exec = cel::Executor::new_llm(log.as_ref().and_then(|x| x.request_snapshot.as_deref()), &v);
+		let exec = cel::Executor::new_llm(snapshot, &v);
 		let to_set: Vec<_> = self
 			.transformations
 			.iter()

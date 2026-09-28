@@ -2119,13 +2119,7 @@ impl AIProvider {
 
 	fn apply_model_alias(&self, policies: Option<&Policy>, req: &mut impl RequestType) {
 		if let Some(p) = policies {
-			// Apply model alias resolution
-			if req.supports_model()
-				&& let Some(model) = req.model()
-				&& let Some(aliased) = p.resolve_model_alias(model.as_str())
-			{
-				*model = aliased.to_string();
-			}
+			p.apply_model_alias(req);
 		}
 	}
 
@@ -3084,7 +3078,10 @@ impl AIProvider {
 		};
 		self.set_provider_request_model(&parts, &mut request, path_model_wins)?;
 		let mut request = if let Some(p) = policies {
-			p.apply_request_body_mutations(request, log)?
+			p.apply_request_body_mutations(
+				request,
+				log.as_ref().and_then(|log| log.request_snapshot.as_deref()),
+			)?
 		} else {
 			request
 		};
