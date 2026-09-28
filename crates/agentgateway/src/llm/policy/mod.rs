@@ -10,7 +10,7 @@ use crate::http::filters::{BackendRequestTimeout, HeaderModifier};
 use crate::http::jwt::Claims;
 use crate::http::{HeaderOrPseudo, Response, StatusCode};
 use crate::llm::policy::webhook::{MaskActionBody, RequestAction, ResponseAction};
-use crate::llm::{AIError, ContentScope, RequestType, ResponseType};
+use crate::llm::{AIError, ContentScope, RequestType, ResponseTextKind, ResponseType};
 use crate::proxy::httpproxy::PolicyClient;
 use crate::telemetry::log::{GuardrailLog, RequestLog};
 use crate::telemetry::metrics::{GuardrailAction, GuardrailPhase};
@@ -398,14 +398,27 @@ impl TextReplacements {
 		)
 	}
 
-	fn apply(self, visit_text: impl FnOnce(&mut dyn FnMut(&mut String))) {
+	/// Writes replacements back in visit order, skipping locked text; returns whether any were skipped.
+	fn apply<K: Copy>(
+		self,
+		visit_text: impl FnOnce(&mut dyn FnMut(K, &mut String)),
+		locked: impl Fn(K) -> bool,
+	) -> bool {
 		let mut replacements = self.0.into_iter();
-		visit_text(&mut |text| {
-			if let Some(Some(replacement)) = replacements.next() {
-				*text = replacement;
+		let mut refused = false;
+		visit_text(&mut |kind, text| {
+			if let Some(Some(replacement)) = replacements.next()
+				&& replacement != *text
+			{
+				if locked(kind) {
+					refused = true;
+				} else {
+					*text = replacement;
+				}
 			}
 		});
 		debug_assert!(replacements.next().is_none());
+		refused
 	}
 }
 
@@ -480,8 +493,8 @@ impl crate::llm::ResponseType for TextResponse {
 		serde_json::to_vec(&self.to_webhook_choices())
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
-		f(&mut self.content);
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ResponseTextKind, &mut String)) {
+		f(ResponseTextKind::Output, &mut self.content);
 	}
 }
 
@@ -883,16 +896,17 @@ impl Policy {
 		exec.eval(expression).ok()?.json().ok()
 	}
 
+	/// `apply_mask` returns a rejection when the mask can't be applied as-is.
 	fn apply_guardrail_outcome<Mask>(
 		outcome: GuardrailOutcome<Mask>,
-		apply_mask: impl FnOnce(Mask) -> anyhow::Result<()>,
+		apply_mask: impl FnOnce(Mask) -> anyhow::Result<Option<Response>>,
 	) -> anyhow::Result<(GuardrailAction, Option<Response>)> {
 		let action = (&outcome).into();
 		let rejection = match outcome {
 			GuardrailOutcome::None | GuardrailOutcome::Audit | GuardrailOutcome::FailOpen => None,
-			GuardrailOutcome::Masked(mutation) => {
-				apply_mask(mutation)?;
-				None
+			GuardrailOutcome::Masked(mutation) => match apply_mask(mutation)? {
+				Some(rejection) => return Ok((GuardrailAction::Reject, Some(rejection))),
+				None => None,
 			},
 			GuardrailOutcome::Rejected(response) => Some(response),
 		};
@@ -906,26 +920,34 @@ impl Policy {
 		Self::apply_guardrail_outcome(outcome, |mutation| {
 			match mutation {
 				RequestGuardMutation::Texts(replacements) => {
-					replacements.apply(|visitor| req.visit_text_mut(&mut |_, text| visitor(text)));
+					replacements.apply(|visitor| req.visit_text_mut(visitor), |_| false);
 				},
 				RequestGuardMutation::Messages(messages) => req.set_messages(messages),
 			}
-			Ok(())
+			Ok(None)
 		})
 	}
 
 	fn apply_response_guard_outcome(
 		outcome: GuardrailOutcome<ResponseGuardMutation>,
+		rejection: &RequestRejection,
 		resp: &mut dyn ResponseType,
 	) -> anyhow::Result<(GuardrailAction, Option<Response>)> {
 		Self::apply_guardrail_outcome(outcome, |mutation| {
 			match mutation {
 				ResponseGuardMutation::Texts(replacements) => {
-					replacements.apply(|visitor| resp.visit_text_mut(visitor));
+					// Signed reasoning can't be masked without breaking replay; reject instead.
+					let refused = replacements.apply(
+						|visitor| resp.visit_text_mut(visitor),
+						|kind| kind == ResponseTextKind::SignedReasoning,
+					);
+					if refused {
+						return Ok(Some(rejection.as_response()));
+					}
 				},
 				ResponseGuardMutation::Choices(choices) => resp.set_webhook_choices(choices)?,
 			}
-			Ok(())
+			Ok(None)
 		})
 	}
 
@@ -1412,7 +1434,7 @@ impl Policy {
 	}
 
 	fn response_texts(resp: &mut dyn ResponseType) -> Vec<String> {
-		Self::collect_texts(|f| resp.visit_text_mut(f))
+		Self::collect_texts(|f| resp.visit_text_mut(&mut |_, text| f(text)))
 	}
 
 	#[cfg(test)]
@@ -1478,7 +1500,7 @@ impl Policy {
 		rej: &RequestRejection,
 	) -> anyhow::Result<GuardrailAction> {
 		let outcome = Self::evaluate_regex_response(resp, rgx, rej);
-		let (action, _) = Self::apply_response_guard_outcome(outcome, resp)?;
+		let (action, _) = Self::apply_response_guard_outcome(outcome, rej, resp)?;
 		Ok(action)
 	}
 
@@ -1490,7 +1512,7 @@ impl Policy {
 		let mut replacements = Vec::new();
 		let mut rejected = false;
 		let mut audited = false;
-		resp.visit_text_mut(&mut |text| {
+		resp.visit_text_mut(&mut |_, text| {
 			if rejected || audited {
 				return;
 			}
@@ -1895,7 +1917,7 @@ impl Policy {
 			return Ok((GuardrailAction::Allow, None));
 		}
 
-		let (action, rejection) = Self::apply_response_guard_outcome(outcome, resp)?;
+		let (action, rejection) = Self::apply_response_guard_outcome(outcome, &guard.rejection, resp)?;
 		let record = match streaming_allow_recorded {
 			Some(recorded) if action == GuardrailAction::Allow => !std::mem::replace(recorded, true),
 			_ => true,

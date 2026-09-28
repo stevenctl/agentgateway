@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
 	ContentScope, NormalizedMessage, NormalizedMessagePart, OutputMessage, OutputMessagePart,
-	RequestType, ResponseType, SimpleChatCompletionMessage, visit_json_at,
+	RequestType, ResponseTextKind, ResponseType, SimpleChatCompletionMessage, visit_json_at,
 };
 use crate::webhook::{Message, ResponseChoice};
 use crate::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse};
@@ -635,12 +635,53 @@ impl ResponseType for Response {
 		serde_json::to_vec(&self)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ResponseTextKind, &mut String)) {
 		for c in &mut self.content {
-			if let Some(text) = &mut c.text {
-				f(text);
-			}
+			visit_response_block_text(c, f);
 		}
+	}
+}
+
+// visit every documented response block type
+fn visit_response_block_text(
+	block: &mut Content,
+	f: &mut dyn FnMut(ResponseTextKind, &mut String),
+) {
+	match block.rest.get("type").and_then(|t| t.as_str()) {
+		Some("text") => {
+			if let Some(text) = &mut block.text {
+				f(ResponseTextKind::Output, text);
+			}
+		},
+		Some("thinking") => {
+			let kind = ResponseTextKind::reasoning(block.rest.get("signature").and_then(|s| s.as_str()));
+			visit_json_at(&mut block.rest, &["thinking"], kind, f);
+		},
+		// Encrypted.
+		Some("redacted_thinking") => {},
+		// Tool traffic is not guarded on responses.
+		Some(
+			"tool_use"
+			| "server_tool_use"
+			| "mcp_tool_use"
+			| "mcp_tool_result"
+			| "web_search_tool_result"
+			| "web_fetch_tool_result"
+			| "code_execution_tool_result"
+			| "bash_code_execution_tool_result"
+			| "text_editor_code_execution_tool_result"
+			| "tool_search_tool_result"
+			| "container_upload",
+		) => {},
+		other => {
+			tracing::debug!(
+				block_type = other.unwrap_or("<none>"),
+				"unrecognized response block; scanning only its text"
+			);
+			if let Some(text) = &mut block.text {
+				f(ResponseTextKind::Output, text);
+			}
+		},
 	}
 }
 
@@ -1423,10 +1464,27 @@ pub mod typed {
 			serde_json::to_vec(&self)
 		}
 
-		fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+		fn visit_text_mut(&mut self, f: &mut dyn FnMut(super::ResponseTextKind, &mut String)) {
+			use super::ResponseTextKind;
 			for block in &mut self.content {
-				if let ContentBlock::Text(t) = block {
-					f(&mut t.text);
+				match block {
+					ContentBlock::Text(t) => f(ResponseTextKind::Output, &mut t.text),
+					ContentBlock::Thinking {
+						thinking,
+						signature,
+					} => f(ResponseTextKind::reasoning(Some(signature)), thinking),
+					// Encrypted.
+					ContentBlock::RedactedThinking { .. } => {},
+					// Tool traffic is not guarded on responses.
+					ContentBlock::ToolUse { .. }
+					| ContentBlock::ToolResult { .. }
+					| ContentBlock::ServerToolUse { .. }
+					| ContentBlock::WebSearchToolResult { .. } => {},
+					// Request-only blocks.
+					ContentBlock::Image(_) | ContentBlock::Document(_) | ContentBlock::SearchResult(_) => {},
+					ContentBlock::Unknown => {
+						tracing::debug!("unrecognized response block; not scanned by response guards");
+					},
 				}
 			}
 		}

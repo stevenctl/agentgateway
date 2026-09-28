@@ -930,26 +930,74 @@ impl ResponseType for Response {
 		serde_json::to_vec(&self)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ResponseTextKind, &mut String)) {
 		for o in &mut self.output {
-			if let OutputItem::Message(msg) = o {
-				for c in &mut msg.content {
-					if let Content::OutputText(t) = c {
+			visit_output_item_text(o, f);
+		}
+	}
+}
+
+// visit every output item type in the typed SDK
+fn visit_output_item_text(item: &mut OutputItem, f: &mut dyn FnMut(ResponseTextKind, &mut String)) {
+	match item {
+		OutputItem::Message(msg) => {
+			for c in &mut msg.content {
+				match c {
+					Content::OutputText(t) => {
 						if t.annotations.is_empty() && t.logprobs.is_none() {
-							f(&mut t.text);
+							f(ResponseTextKind::Output, &mut t.text);
 							continue;
 						}
 						// offset-based metadata cannot survive a text rewrite
 						let original = t.text.clone();
-						f(&mut t.text);
+						f(ResponseTextKind::Output, &mut t.text);
 						if t.text != original {
 							t.annotations.clear();
 							t.logprobs = None;
 						}
-					}
+					},
+					// Not guarded on responses.
+					Content::Refusal(_) => {},
 				}
 			}
-		}
+		},
+		// summary/content aren't bound to encrypted_content, so they're safe to rewrite
+		OutputItem::Reasoning(r) => {
+			for s in &mut r.summary {
+				let typed::SummaryPart::SummaryText(s) = s;
+				f(ResponseTextKind::Reasoning, &mut s.text);
+			}
+			for c in r.content.iter_mut().flatten() {
+				let typed::ReasoningItemContent::ReasoningText(c) = c;
+				f(ResponseTextKind::Reasoning, &mut c.text);
+			}
+		},
+		// Encrypted.
+		OutputItem::Compaction(_) => {},
+		// Tool traffic is not guarded on responses.
+		OutputItem::FileSearchCall(_)
+		| OutputItem::FunctionCall(_)
+		| OutputItem::FunctionCallOutput(_)
+		| OutputItem::WebSearchCall(_)
+		| OutputItem::ComputerCall(_)
+		| OutputItem::ComputerCallOutput(_)
+		| OutputItem::ImageGenerationCall(_)
+		| OutputItem::CodeInterpreterCall(_)
+		| OutputItem::LocalShellCall(_)
+		| OutputItem::ShellCall(_)
+		| OutputItem::ShellCallOutput(_)
+		| OutputItem::ApplyPatchCall(_)
+		| OutputItem::ApplyPatchCallOutput(_)
+		| OutputItem::McpCall(_)
+		| OutputItem::McpListTools(_)
+		| OutputItem::McpApprovalRequest(_)
+		| OutputItem::CustomToolCall(_)
+		| OutputItem::CustomToolCallOutput(_)
+		| OutputItem::ToolSearchCall(_)
+		| OutputItem::ToolSearchOutput(_)
+		| OutputItem::Program(_)
+		| OutputItem::ProgramOutput(_)
+		| OutputItem::AdditionalTools(_) => {},
 	}
 }
 
@@ -969,7 +1017,8 @@ pub mod typed {
 		ResponseInProgressEvent, ResponseIncompleteEvent, ResponseOutputItemAddedEvent,
 		ResponseOutputItemDoneEvent, ResponseRefusalDeltaEvent, ResponseRefusalDoneEvent,
 		ResponseTextDeltaEvent, ResponseTextDoneEvent, ResponseTextParam, ResponseUsage, Role, Status,
-		TextResponseFormatConfiguration, Tool, ToolChoiceFunction, ToolChoiceOptions, ToolChoiceParam,
+		SummaryPart, TextResponseFormatConfiguration, Tool, ToolChoiceFunction, ToolChoiceOptions,
+		ToolChoiceParam,
 	};
 	use serde::{Deserialize, Serialize};
 

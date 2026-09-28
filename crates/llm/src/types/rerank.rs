@@ -2,7 +2,7 @@ use agent_core::prelude::Strng;
 use agent_core::strng;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ContentScope, RequestType};
+use crate::types::{ContentScope, RequestType, ResponseTextKind};
 use crate::{AIError, InputFormat, LLMRequest, LLMRequestParams, SimpleChatCompletionMessage};
 
 /// Canonical rerank request, modeled on the Cohere `/v2/rerank` API.
@@ -176,7 +176,7 @@ impl crate::types::ResponseType for Response {
 		serde_json::to_vec(self)
 	}
 
-	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(&mut String)) {}
+	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(ResponseTextKind, &mut String)) {}
 }
 
 /// Parse a rerank response, accepting either Cohere's `results` or Voyage's `data` key.

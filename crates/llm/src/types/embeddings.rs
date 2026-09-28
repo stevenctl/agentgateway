@@ -2,7 +2,7 @@ use agent_core::prelude::Strng;
 use agent_core::strng;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ContentScope, RequestType};
+use crate::types::{ContentScope, RequestType, ResponseTextKind};
 use crate::{
 	AIError, InputFormat, LLMRequest, LLMRequestParams, SimpleChatCompletionMessage, json,
 };
@@ -144,7 +144,7 @@ impl crate::types::ResponseType for Response {
 		serde_json::to_vec(self)
 	}
 
-	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(&mut String)) {}
+	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(ResponseTextKind, &mut String)) {}
 }
 
 /// 'typed' provides a strictly-typed internal representation of the OpenAI embeddings API.

@@ -305,37 +305,41 @@ impl GuardedSseBody {
 			return None;
 		}
 		if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
-			// OpenAI responses: response.output_text.delta
-			if v.get("type").and_then(|t| t.as_str()) == Some("response.output_text.delta")
+			// OpenAI responses: output text and reasoning deltas
+			if let Some(
+				"response.output_text.delta"
+				| "response.reasoning_text.delta"
+				| "response.reasoning_summary_text.delta",
+			) = v.get("type").and_then(|t| t.as_str())
 				&& let Some(text) = v.get("delta").and_then(|s| s.as_str())
 			{
 				return Some(text.to_string());
 			}
-			// OpenAI completions: choices[0].delta.content
-			if let Some(text) = v
+			// OpenAI completions: choices[0].delta.{content,reasoning_content,reasoning}
+			if let Some(delta) = v
 				.get("choices")
 				.and_then(|c| c.get(0))
 				.and_then(|c| c.get("delta"))
-				.and_then(|d| d.get("content"))
-				.and_then(|s| s.as_str())
 			{
-				return Some(text.to_string());
+				let text: String = ["content", "reasoning_content", "reasoning"]
+					.iter()
+					.filter_map(|k| delta.get(k).and_then(|s| s.as_str()))
+					.collect();
+				if !text.is_empty() {
+					return Some(text);
+				}
 			}
-			// Anthropic messages: delta.text
+			// Anthropic messages: delta.text, or delta.thinking for thinking_delta
 			if let Some(text) = v
 				.get("delta")
-				.and_then(|d| d.get("text"))
+				.and_then(|d| d.get("text").or_else(|| d.get("thinking")))
 				.and_then(|s| s.as_str())
 			{
 				return Some(text.to_string());
 			}
-			// Native Gemini: candidates[].content.parts[].text. `candidateCount` is client
-			// controlled, so reading only candidates[0] would let the client hide text from the
-			// guard in a second candidate. Concatenating every candidate is the conservative
-			// choice: the guard evaluates one text stream, and a window that contains all
-			// candidates can only match more than one that contains a subset — every substring of
-			// a single candidate is still contiguous in the concatenation. Thought parts are
-			// excluded, as they are on the non-streaming path (types::gemini::candidate_text).
+			// Native Gemini: every candidate's parts[].text, thoughts included. `candidateCount` is
+			// client controlled, so concatenate all candidates rather than reading only candidates[0];
+			// each candidate's text stays contiguous, so a match is never lost.
 			if let Some(candidates) = v.get("candidates").and_then(|c| c.as_array()) {
 				return Some(
 					candidates
@@ -346,7 +350,6 @@ impl GuardedSseBody {
 								.and_then(|p| p.as_array())
 						})
 						.flatten()
-						.filter(|p| p.get("thought").and_then(serde_json::Value::as_bool) != Some(true))
 						.filter_map(|p| p.get("text").and_then(|t| t.as_str()))
 						.collect(),
 				);
@@ -662,8 +665,12 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_gemini_sse_text_is_evaluated() {
-		let chunk1 = gemini_delta_bytes("my SSN", "planning the answer");
-		let chunk2 = gemini_delta_bytes(" is 123-45-6789", "still planning");
+		let chunk1 = gemini_candidates_bytes(serde_json::json!([
+			{ "content": { "role": "model", "parts": [{ "text": "my SSN" }] } }
+		]));
+		let chunk2 = gemini_candidates_bytes(serde_json::json!([
+			{ "content": { "role": "model", "parts": [{ "text": " is 123-45-6789" }] } }
+		]));
 		let body = make_body(vec![chunk1, chunk2]);
 
 		let guarded = GuardedSseBody::new(
@@ -684,10 +691,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_gemini_sse_evaluates_every_candidate() {
-		// candidateCount is client-controlled: the guard-relevant text sits in candidates[1]
-		// behind a candidates[0] that only carries a thought part.
+		// candidateCount is client-controlled; the SSN is only in candidates[1].
 		let chunk = gemini_candidates_bytes(serde_json::json!([
-			{ "content": { "role": "model", "parts": [{ "text": "planning", "thought": true }] } },
+			{ "content": { "role": "model", "parts": [{ "text": "Sure," }] } },
 			{ "content": { "role": "model", "parts": [{ "text": "my SSN is 123-45-6789" }] } }
 		]));
 		let body = make_body(vec![chunk]);
@@ -751,18 +757,45 @@ mod tests {
 			text_delta(serde_json::json!({
 				"candidates": [
 					{ "content": { "parts": [{ "text": "d" }] } },
-					{ "content": { "parts": [{ "text": "e" }, { "text": "skip", "thought": true }] } }
+					{ "content": { "parts": [{ "text": "e" }, { "text": "f", "thought": true }] } }
 				]
 			})),
-			Some("de".to_string())
+			Some("def".to_string())
+		);
+		assert_eq!(
+			text_delta(serde_json::json!({ "type": "response.reasoning_text.delta", "delta": "g" })),
+			Some("g".to_string())
+		);
+		assert_eq!(
+			text_delta(serde_json::json!({
+				"type": "response.reasoning_summary_text.delta",
+				"delta": "h"
+			})),
+			Some("h".to_string())
+		);
+		assert_eq!(
+			text_delta(serde_json::json!({ "choices": [{ "delta": { "reasoning_content": "i" } }] })),
+			Some("i".to_string())
+		);
+		assert_eq!(
+			text_delta(serde_json::json!({ "choices": [{ "delta": { "reasoning": "j" } }] })),
+			Some("j".to_string())
+		);
+		assert_eq!(
+			text_delta(serde_json::json!({
+				"type": "content_block_delta",
+				"delta": { "type": "thinking_delta", "thinking": "k" }
+			})),
+			Some("k".to_string())
 		);
 		assert_eq!(text_delta(serde_json::json!({ "usageMetadata": {} })), None);
 	}
 
 	#[tokio::test]
-	async fn test_gemini_sse_ignores_thought_parts() {
+	async fn test_gemini_sse_evaluates_thought_parts() {
+		// The model repeats a forbidden phrase while thinking, then answers cleanly.
 		let chunk = gemini_delta_bytes("all good", "forbidden");
-		let body = make_body(vec![chunk.clone()]);
+		let body = make_body(vec![chunk]);
 
 		let guarded = GuardedSseBody::new(
 			body,
@@ -772,8 +805,8 @@ mod tests {
 		);
 
 		let bytes = guarded.collect().await.unwrap().to_bytes();
-		assert!(bytes.starts_with(&chunk));
-		assert!(!contains(&bytes, b"guardrail_blocked"));
+		assert!(contains(&bytes, b"guardrail_blocked"));
+		assert!(!contains(&bytes, b"forbidden"));
 	}
 
 	#[tokio::test]

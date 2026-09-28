@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
 	ContentScope, NormalizedMessage, NormalizedMessagePart, OutputMessage, OutputMessagePart,
-	ResponseType, SimpleChatCompletionMessage,
+	ResponseTextKind, ResponseType, SimpleChatCompletionMessage,
 };
 use crate::webhook::{Message, ResponseChoice};
 use crate::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse, json};
@@ -257,12 +257,59 @@ impl ResponseType for Response {
 		serde_json::to_vec(&self)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ResponseTextKind, &mut String)) {
 		for c in &mut self.choices {
-			if let Some(text) = &mut c.message.content {
-				f(text);
+			let msg = &mut c.message;
+			if let Some(text) = &mut msg.content {
+				f(ResponseTextKind::Output, text);
+			}
+			// our Anthropic/Bedrock translations sign `reasoning_content` via `reasoning_signature`
+			let kind =
+				ResponseTextKind::reasoning(msg.rest.get("reasoning_signature").and_then(|s| s.as_str()));
+			for (key, kind) in [
+				("reasoning_content", kind),
+				("reasoning", ResponseTextKind::Reasoning),
+			] {
+				if let Some(serde_json::Value::String(text)) = msg.rest.get_mut(key) {
+					f(kind, text);
+				}
+			}
+			if let Some(details) = msg
+				.rest
+				.get_mut("reasoning_details")
+				.and_then(|d| d.as_array_mut())
+			{
+				for d in details {
+					visit_reasoning_detail(d, f);
+				}
 			}
 		}
+	}
+}
+
+// https://openrouter.ai/docs/use-cases/reasoning-tokens#reasoning_details-array-structure
+fn visit_reasoning_detail(
+	detail: &mut serde_json::Value,
+	f: &mut dyn FnMut(ResponseTextKind, &mut String),
+) {
+	let (key, kind) = match detail.get("type").and_then(|t| t.as_str()) {
+		Some("reasoning.text") => (
+			"text",
+			ResponseTextKind::reasoning(detail.get("signature").and_then(|s| s.as_str())),
+		),
+		Some("reasoning.summary") => ("summary", ResponseTextKind::Reasoning),
+		// Encrypted.
+		Some("reasoning.encrypted") => return,
+		other => {
+			tracing::debug!(
+				detail_type = other.unwrap_or("<none>"),
+				"unrecognized reasoning detail; not scanned by response guards"
+			);
+			return;
+		},
+	};
+	if let Some(serde_json::Value::String(text)) = detail.get_mut(key) {
+		f(kind, text);
 	}
 }
 

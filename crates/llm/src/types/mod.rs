@@ -93,7 +93,27 @@ pub trait ResponseType: Send + Sync {
 		resp: Vec<crate::webhook::ResponseChoice>,
 	) -> anyhow::Result<()>;
 	fn serialize(&self) -> serde_json::Result<Vec<u8>>;
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String));
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ResponseTextKind, &mut String));
+}
+
+/// A category of response text a guard can inspect. Encrypted reasoning is never visited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseTextKind {
+	Output,
+	/// Plaintext reasoning or a reasoning summary; safe to rewrite.
+	Reasoning,
+	/// Reasoning the provider integrity-checks on replay; must not be rewritten.
+	SignedReasoning,
+}
+
+impl ResponseTextKind {
+	pub(crate) fn reasoning(signature: Option<&str>) -> Self {
+		if signature.is_some_and(|s| !s.is_empty()) {
+			ResponseTextKind::SignedReasoning
+		} else {
+			ResponseTextKind::Reasoning
+		}
+	}
 }
 
 /// A category of request content that a prompt guard can inspect.
@@ -134,11 +154,11 @@ pub(crate) fn visit_json_strings(value: &mut serde_json::Value, f: &mut dyn FnMu
 /// Recursively every string value in the JSON tree at `path`; a bare string is visited as one
 /// opaque value.
 /// TODO Numbers and bools are not scanned.
-pub(crate) fn visit_json_at(
+pub(crate) fn visit_json_at<S: Copy>(
 	value: &mut serde_json::Value,
 	path: &[&str],
-	scope: ContentScope,
-	f: &mut dyn FnMut(ContentScope, &mut String),
+	scope: S,
+	f: &mut dyn FnMut(S, &mut String),
 ) {
 	if let Some(target) = path.iter().try_fold(value, |v, k| v.get_mut(*k)) {
 		visit_json_strings(target, &mut |text| f(scope, text));

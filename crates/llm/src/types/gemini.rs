@@ -24,7 +24,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::{
 	ContentScope, NormalizedMessage, NormalizedMessagePart, OutputMessage, OutputMessagePart,
-	ResponseType, vertex_gemini as vg,
+	ResponseTextKind, ResponseType, vertex_gemini as vg,
 };
 use crate::{
 	AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse, RequestType,
@@ -117,15 +117,17 @@ impl<'de> Deserialize<'de> for Request {
 	}
 }
 
-/// Applies `f` to the text of every visible (non-thought) `Text` part in `content`, scanning
-/// consecutive text parts as one run so guard patterns can span parts — matching how the other
-/// request/response types expose text to prompt guard.
-fn visit_content_text(content: &mut vg::Content, f: &mut dyn FnMut(&mut String)) {
+/// Applies `f` to runs of consecutive `Text` parts matching `keep`, so guard patterns can span parts.
+fn visit_text_parts(
+	content: &mut vg::Content,
+	keep: impl Fn(&vg::TextPart) -> bool,
+	f: &mut dyn FnMut(&mut String),
+) {
 	crate::types::scan_text_runs(
 		&mut content.parts,
 		"\n",
 		|p| match p {
-			vg::Part::Text(tp) if tp.thought != Some(true) => Some(&mut tp.text),
+			vg::Part::Text(tp) if keep(tp) => Some(&mut tp.text),
 			_ => None,
 		},
 		|_| None,
@@ -134,12 +136,24 @@ fn visit_content_text(content: &mut vg::Content, f: &mut dyn FnMut(&mut String))
 	);
 }
 
+fn is_visible(tp: &vg::TextPart) -> bool {
+	tp.thought != Some(true)
+}
+
+fn text_part_kind(tp: &vg::TextPart) -> ResponseTextKind {
+	if is_visible(tp) {
+		ResponseTextKind::Output
+	} else {
+		ResponseTextKind::reasoning(tp.thought_signature.as_deref())
+	}
+}
+
 // visit every part (that is represented in the typed SDK)
 // unknown items should be logged for future review
 // https://ai.google.dev/api/generate-content#Part
 fn visit_tool_part_text(part: &mut vg::Part, f: &mut dyn FnMut(ContentScope, &mut String)) {
 	match part {
-		// not a tool, visit_content_text covers Text
+		// not a tool, visit_text_parts covers Text
 		vg::Part::Text(_) => {},
 		vg::Part::FunctionCall(p) => {
 			crate::types::visit_json_strings(&mut p.function_call.args, &mut |text| {
@@ -267,13 +281,17 @@ impl RequestType for Request {
 
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ContentScope, &mut String)) {
 		if let Some(system) = &mut self.inner.system_instruction {
-			visit_content_text(system, &mut |text| f(ContentScope::SystemPrompt, text));
+			visit_text_parts(system, is_visible, &mut |text| {
+				f(ContentScope::SystemPrompt, text)
+			});
 		}
 		for content in &mut self.inner.contents {
 			for part in &mut content.parts {
 				visit_tool_part_text(part, f);
 			}
-			visit_content_text(content, &mut |text| f(ContentScope::Messages, text));
+			visit_text_parts(content, is_visible, &mut |text| {
+				f(ContentScope::Messages, text)
+			});
 		}
 	}
 }
@@ -591,10 +609,19 @@ impl ResponseType for Response {
 		serde_json::to_vec(&self.0)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(ResponseTextKind, &mut String)) {
 		for candidate in &mut self.0.candidates {
 			if let Some(content) = &mut candidate.content {
-				visit_content_text(content, f);
+				// one pass per kind so a masked run never spans a signed part
+				for kind in [
+					ResponseTextKind::Output,
+					ResponseTextKind::Reasoning,
+					ResponseTextKind::SignedReasoning,
+				] {
+					visit_text_parts(content, |tp| text_part_kind(tp) == kind, &mut |text| {
+						f(kind, text)
+					});
+				}
 			}
 		}
 	}

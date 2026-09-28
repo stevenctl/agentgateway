@@ -997,9 +997,12 @@ fn apply_bedrock_response_mask(resp: &mut dyn ResponseType, sent: &[&str], maske
 		&bedrock_test_config(),
 	);
 	assert!(matches!(outcome, GuardrailOutcome::Masked(_)));
-	let (_, rejection) =
-		Policy::apply_response_guard_outcome(outcome.map_mask(ResponseGuardMutation::Texts), resp)
-			.unwrap();
+	let (_, rejection) = Policy::apply_response_guard_outcome(
+		outcome.map_mask(ResponseGuardMutation::Texts),
+		&RequestRejection::default(),
+		resp,
+	)
+	.unwrap();
 	assert!(rejection.is_none());
 }
 
@@ -3935,4 +3938,113 @@ fn test_zero_width_pattern_is_a_noop() {
 			"messages": [{"role": "user", "content": "hello world"}]
 		})
 	);
+}
+
+fn email_mask_guard() -> ResponseGuard {
+	ResponseGuard {
+		rejection: Default::default(),
+		kind: ResponseGuardKind::Regex(RegexRules {
+			action: Action::Mask,
+			rules: vec![RegexRule::Builtin {
+				builtin: Builtin::Email,
+			}],
+		}),
+	}
+}
+
+async fn apply_response_guard(
+	guard: &ResponseGuard,
+	resp: &mut dyn ResponseType,
+) -> (GuardrailAction, Option<Response>) {
+	let client = crate::test_helpers::policy_client();
+	Policy::apply_single_response_guard(
+		guard,
+		resp,
+		&::http::HeaderMap::new(),
+		&client,
+		None,
+		None,
+		None,
+	)
+	.await
+	.unwrap()
+}
+
+fn completions_reasoning(message: serde_json::Value) -> crate::llm::types::completions::Response {
+	serde_json::from_value(serde_json::json!({
+		"model": "m",
+		"choices": [{ "finish_reason": "length", "message": message }]
+	}))
+	.unwrap()
+}
+
+fn claude_thinking(thinking: &str, text: &str) -> serde_json::Value {
+	serde_json::json!({
+		"id": "msg_1",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-sonnet-4-5",
+		"usage": { "input_tokens": 1, "output_tokens": 1 },
+		"content": [
+			{ "type": "thinking", "thinking": thinking, "signature": "sig" },
+			{ "type": "text", "text": text }
+		]
+	})
+}
+
+#[tokio::test]
+async fn masks_unsigned_reasoning() {
+	// gpt-oss hit its token limit mid-thought: the PII is only in reasoning_content.
+	let mut resp = completions_reasoning(serde_json::json!({
+		"reasoning_content": "User wants example@email.com echoed back"
+	}));
+
+	let (action, rejection) = apply_response_guard(&email_mask_guard(), &mut resp).await;
+	assert!(rejection.is_none());
+	assert_eq!(action, GuardrailAction::Mask);
+	let reasoning = resp.choices[0].message.rest["reasoning_content"]
+		.as_str()
+		.unwrap();
+	assert!(!reasoning.contains("example@email.com"), "{reasoning}");
+}
+
+#[tokio::test]
+async fn rejects_mask_of_signed_reasoning() {
+	// Claude repeats the PII while thinking; masking it would break the signature on replay.
+	let original = claude_thinking("User wants example@email.com echoed", "Sure.");
+	let mut resp: crate::llm::types::messages::Response =
+		serde_json::from_value(original.clone()).unwrap();
+
+	let (action, rejection) = apply_response_guard(&email_mask_guard(), &mut resp).await;
+	assert_eq!(action, GuardrailAction::Reject);
+	assert!(rejection.is_some());
+	let out = serde_json::to_value(&resp).unwrap();
+	assert_eq!(out["content"][0], original["content"][0]);
+}
+
+#[tokio::test]
+async fn rejects_mask_of_signed_completions_reasoning() {
+	// Claude on Bedrock, translated to completions.
+	let mut resp = completions_reasoning(serde_json::json!({
+		"reasoning_content": "User wants example@email.com echoed",
+		"reasoning_signature": "sig"
+	}));
+
+	let (action, _) = apply_response_guard(&email_mask_guard(), &mut resp).await;
+	assert_eq!(action, GuardrailAction::Reject);
+}
+
+#[tokio::test]
+async fn masks_output_beside_signed_reasoning() {
+	// Claude thinks cleanly but puts the email in its answer.
+	let original = claude_thinking("Echo it back", "example@email.com");
+	let mut resp: crate::llm::types::messages::Response =
+		serde_json::from_value(original.clone()).unwrap();
+
+	let (action, rejection) = apply_response_guard(&email_mask_guard(), &mut resp).await;
+	assert!(rejection.is_none());
+	assert_eq!(action, GuardrailAction::Mask);
+	let out = serde_json::to_value(&resp).unwrap();
+	assert_eq!(out["content"][0], original["content"][0]);
+	assert_ne!(out["content"][1], original["content"][1]);
 }
