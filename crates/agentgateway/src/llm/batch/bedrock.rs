@@ -603,7 +603,8 @@ impl Backend<'_> {
 		if !status.is_success() {
 			let body = read_body(response).await?;
 			return Err(UpstreamError {
-				status: Some(status),
+				status: (matches!(service, Service::Bedrock) || status == StatusCode::NOT_FOUND)
+					.then_some(status),
 				message: format!(
 					"{} returned {status}: {}",
 					service.name(),
