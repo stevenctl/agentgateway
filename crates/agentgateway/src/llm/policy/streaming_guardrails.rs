@@ -17,7 +17,7 @@
 //! This is not 100% accurate: a guard that needs full-response context, or a
 //! pattern spanning more than the overlap window, can be missed.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ use tracing::warn;
 
 use super::{FailureMode, ResponseGuard, StreamingEvaluator, StreamingGuardrailOutcome};
 use crate::cel::RequestSnapshot;
+use crate::llm::ContentScope;
 use crate::llm::policy::{Policy, PromptGuard};
 use crate::proxy::httpproxy::PolicyClient;
 use crate::telemetry::log::GuardrailLog;
@@ -59,12 +60,15 @@ pub fn tail_chars(s: &str, max_bytes: usize) -> &str {
 	&s[start..]
 }
 
-/// Run all evaluators against a window. Returns the rejection body if any evaluator blocked.
+const FAIL_CLOSED_BODY: &[u8] = b"Content blocked by guardrail policy";
+
+/// Run the evaluators covering `scope` against a window. Returns the rejection body if any evaluator blocked.
 pub async fn evaluate_window(
 	evaluators: &mut [Box<dyn StreamingEvaluator>],
+	scope: ContentScope,
 	window: &str,
 ) -> Option<Bytes> {
-	for ev in evaluators.iter_mut() {
+	for ev in evaluators.iter_mut().filter(|ev| ev.covers(scope)) {
 		match ev.evaluate(window).await {
 			Ok(Some(StreamingGuardrailOutcome::Blocked(body))) => {
 				tracing::debug!("streaming guardrail blocked response window");
@@ -74,7 +78,7 @@ pub async fn evaluate_window(
 			Err(e) => match ev.failure_mode() {
 				FailureMode::FailClosed => {
 					warn!("streaming guardrail error, failing closed: {e}");
-					return Some(Bytes::from_static(b"Content blocked by guardrail policy"));
+					return Some(Bytes::from_static(FAIL_CLOSED_BODY));
 				},
 				FailureMode::FailOpen => {
 					warn!("streaming guardrail error, failing open: {e}");
@@ -88,10 +92,10 @@ pub async fn evaluate_window(
 /// Evaluate windows until one blocks
 async fn evaluate_windows(
 	mut evaluators: Vec<Box<dyn StreamingEvaluator>>,
-	windows: Vec<String>,
+	windows: Vec<(ContentScope, String)>,
 ) -> (Vec<Box<dyn StreamingEvaluator>>, Option<Bytes>) {
-	for window in windows {
-		if let Some(blocked) = evaluate_window(&mut evaluators, &window).await {
+	for (scope, window) in windows {
+		if let Some(blocked) = evaluate_window(&mut evaluators, scope, &window).await {
 			return (evaluators, Some(blocked));
 		}
 	}
@@ -154,6 +158,10 @@ impl Drop for ResponseGuardEvaluator {
 impl StreamingEvaluator for ResponseGuardEvaluator {
 	fn failure_mode(&self) -> FailureMode {
 		self.guard.failure_mode()
+	}
+
+	fn covers(&self, scope: ContentScope) -> bool {
+		self.guard.scope.contains(&scope)
 	}
 
 	async fn evaluate(&mut self, window: &str) -> anyhow::Result<Option<StreamingGuardrailOutcome>> {
@@ -251,29 +259,217 @@ impl ResponseDelta {
 		self.text.len() + self.reasoning.len()
 	}
 
-	fn is_empty(&self) -> bool {
-		self.len() == 0
-	}
-
 	fn append(&mut self, delta: Self) {
 		self.text.push_str(&delta.text);
 		self.reasoning.push_str(&delta.reasoning);
 	}
 
-	fn take_windows(&mut self, overlap: &mut Self) -> Vec<String> {
+	fn take_windows(&mut self, overlap: &mut Self) -> Vec<(ContentScope, String)> {
 		let mut windows = Vec::new();
-		for (pending, tail) in [
-			(&mut self.reasoning, &mut overlap.reasoning),
-			(&mut self.text, &mut overlap.text),
+		// reasoning is message content, as on the buffered path
+		for (scope, pending, tail) in [
+			(
+				ContentScope::Messages,
+				&mut self.reasoning,
+				&mut overlap.reasoning,
+			),
+			(ContentScope::Messages, &mut self.text, &mut overlap.text),
 		] {
 			if pending.is_empty() {
 				continue;
 			}
 			let window = format!("{tail}{}", std::mem::take(pending));
 			*tail = tail_chars(&window, OVERLAP_BYTES).to_string();
-			windows.push(window);
+			windows.push((scope, window));
 		}
 		windows
+	}
+}
+
+/// Reassembles streamed tool calls so tool-scoped guards see each call whole.
+/// Frames are held while a call is open; completed calls are scanned with the
+/// buffered path's visitors.
+#[derive(Default)]
+struct ToolCalls {
+	/// Open Responses output items, by output index.
+	responses: HashSet<u64>,
+	/// Open Anthropic tool blocks by index, with their streamed `input` JSON.
+	anthropic: HashMap<u64, (serde_json::Value, String)>,
+	/// Completions call arguments by (choice, call index).
+	completions: BTreeMap<(u64, u64), String>,
+	done: Vec<(ContentScope, String)>,
+}
+
+impl ToolCalls {
+	fn is_open(&self) -> bool {
+		!self.responses.is_empty() || !self.anthropic.is_empty() || !self.completions.is_empty()
+	}
+
+	fn observe(&mut self, v: &serde_json::Value) {
+		use serde_json::Value;
+		let u64_at = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or_default();
+		// message and reasoning items/blocks are windowed as text instead
+		let is_tool_item = |item: &Value| {
+			!matches!(
+				item.get("type").and_then(Value::as_str),
+				Some("message" | "reasoning" | "text" | "thinking" | "redacted_thinking")
+			)
+		};
+		match v.get("type").and_then(Value::as_str) {
+			Some("response.output_item.added") => {
+				if v.get("item").is_some_and(is_tool_item) {
+					self.responses.insert(u64_at(v, "output_index"));
+				}
+				return;
+			},
+			Some("response.output_item.done") => {
+				self.responses.remove(&u64_at(v, "output_index"));
+				let Some(item) = v.get("item").filter(|i| is_tool_item(i)) else {
+					return;
+				};
+				match serde_json::from_value(item.clone()) {
+					Ok(mut item) => self.scan(|f| {
+						agent_llm::types::responses::visit_output_item_text(&mut item, &mut |t, s| {
+							f(t.scope, s)
+						})
+					}),
+					Err(_) => self.scan_raw(item),
+				}
+				return;
+			},
+			Some("content_block_start") => {
+				if let Some(block) = v.get("content_block").filter(|b| is_tool_item(b)) {
+					self
+						.anthropic
+						.insert(u64_at(v, "index"), (block.clone(), String::new()));
+				}
+				return;
+			},
+			Some("content_block_delta") => {
+				if let Some((_, input)) = self.anthropic.get_mut(&u64_at(v, "index"))
+					&& let Some(partial) = v
+						.get("delta")
+						.and_then(|d| d.get("partial_json"))
+						.and_then(Value::as_str)
+				{
+					input.push_str(partial);
+				}
+				return;
+			},
+			Some("content_block_stop") => {
+				if let Some((block, input)) = self.anthropic.remove(&u64_at(v, "index")) {
+					self.finish_anthropic(block, input);
+				}
+				return;
+			},
+			_ => {},
+		}
+		if let Some(choices) = v.get("choices").and_then(Value::as_array) {
+			for choice in choices {
+				let idx = u64_at(choice, "index");
+				let delta = choice.get("delta");
+				for call in delta
+					.and_then(|d| d.get("tool_calls"))
+					.and_then(Value::as_array)
+					.into_iter()
+					.flatten()
+				{
+					let args = self
+						.completions
+						.entry((idx, u64_at(call, "index")))
+						.or_default();
+					for path in [["function", "arguments"], ["custom", "input"]] {
+						if let Some(s) = call
+							.get(path[0])
+							.and_then(|c| c.get(path[1]))
+							.and_then(Value::as_str)
+						{
+							args.push_str(s);
+						}
+					}
+				}
+				// legacy single function_call
+				if let Some(s) = delta
+					.and_then(|d| d.get("function_call"))
+					.and_then(|c| c.get("arguments"))
+					.and_then(Value::as_str)
+				{
+					self
+						.completions
+						.entry((idx, u64::MAX))
+						.or_default()
+						.push_str(s);
+				}
+				if choice.get("finish_reason").is_some_and(|r| !r.is_null()) {
+					let calls: Vec<_> = self
+						.completions
+						.range((idx, 0)..=(idx, u64::MAX))
+						.map(|(k, _)| *k)
+						.collect();
+					for k in calls {
+						if let Some(args) = self.completions.remove(&k) {
+							self.done.push((ContentScope::ToolInput, args));
+						}
+					}
+				}
+			}
+			return;
+		}
+		if v.get("candidates").is_some()
+			&& let Ok(mut chunk) = serde_json::from_value::<agent_llm::types::gemini::Response>(v.clone())
+		{
+			use agent_llm::types::ResponseType as _;
+			self.scan(|f| chunk.visit_text_mut(&mut |t, s| f(t.scope, s)));
+		}
+	}
+
+	fn finish_anthropic(&mut self, mut block: serde_json::Value, input: String) {
+		if !input.is_empty() {
+			match serde_json::from_str(&input) {
+				Ok(parsed) => block["input"] = parsed,
+				Err(_) => self.done.push((ContentScope::ToolInput, input)),
+			}
+		}
+		let mut content = agent_llm::types::messages::Content {
+			text: None,
+			rest: block,
+		};
+		self.scan(|f| agent_llm::types::messages::visit_response_content_text(&mut content, f));
+	}
+
+	/// Flush calls the stream ended without closing.
+	fn finish(&mut self) {
+		for (_, args) in std::mem::take(&mut self.completions) {
+			self.done.push((ContentScope::ToolInput, args));
+		}
+		for (_, (block, input)) in std::mem::take(&mut self.anthropic) {
+			self.finish_anthropic(block, input);
+		}
+		self.responses.clear();
+	}
+
+	/// One window per scope; message text is windowed separately.
+	fn scan(&mut self, visit: impl FnOnce(&mut dyn FnMut(ContentScope, &mut String))) {
+		let mut input = Vec::new();
+		let mut output = Vec::new();
+		visit(&mut |scope, text| match scope {
+			ContentScope::ToolInput => input.push(text.clone()),
+			ContentScope::ToolOutput => output.push(text.clone()),
+			_ => {},
+		});
+		for (scope, texts) in [
+			(ContentScope::ToolInput, input),
+			(ContentScope::ToolOutput, output),
+		] {
+			if !texts.is_empty() {
+				self.done.push((scope, texts.join("\n")));
+			}
+		}
+	}
+
+	// items we cannot parse are scanned as raw JSON rather than skipped
+	fn scan_raw(&mut self, item: &serde_json::Value) {
+		self.done.push((ContentScope::ToolInput, item.to_string()));
 	}
 }
 
@@ -289,6 +485,8 @@ pin_project! {
 		held_bytes: usize,
 		pending_text: ResponseDelta,
 		overlap_tail: ResponseDelta,
+		// Only tracked when some guard is scoped to tool content.
+		tool_calls: Option<ToolCalls>,
 		sse_decoder: SseDecoder<Bytes>,
 		decode_buffer: bytes::BytesMut,
 		state: GuardedBodyState,
@@ -330,6 +528,10 @@ impl GuardedSseBody {
 		logger: Option<crate::llm::AmendOnDrop>,
 		eval_threshold: usize,
 	) -> agent_http::RawBody {
+		let tool_calls = evaluators
+			.iter()
+			.any(|e| e.covers(ContentScope::ToolInput) || e.covers(ContentScope::ToolOutput))
+			.then(ToolCalls::default);
 		agent_http::RawBody::new(Self {
 			inner,
 			evaluators,
@@ -339,6 +541,7 @@ impl GuardedSseBody {
 			held_bytes: 0,
 			pending_text: ResponseDelta::default(),
 			overlap_tail: ResponseDelta::default(),
+			tool_calls,
 			sse_decoder: SseDecoder::with_max_size(buffer_limit),
 			decode_buffer: bytes::BytesMut::new(),
 			state: GuardedBodyState::Buffering,
@@ -346,25 +549,29 @@ impl GuardedSseBody {
 		})
 	}
 
-	/// Extract text and reasoning deltas from a parsed SSE frame if present.
-	fn extract_text_delta(frame: SseFrame<Bytes>) -> Option<ResponseDelta> {
+	/// Parse the JSON payload of an SSE event.
+	fn frame_json(frame: SseFrame<Bytes>) -> Option<serde_json::Value> {
 		let SseFrame::Event(Event { data, .. }) = frame else {
 			return None;
 		};
 		if data.as_ref() == b"[DONE]" {
 			return None;
 		}
-		let v = serde_json::from_slice::<serde_json::Value>(&data).ok()?;
+		serde_json::from_slice(&data).ok()
+	}
+
+	/// Extract text and reasoning deltas from a parsed SSE event if present.
+	fn extract_text_delta(v: &serde_json::Value) -> Option<ResponseDelta> {
 		let str_at = |v: &serde_json::Value, key: &str| v.get(key)?.as_str().map(str::to_string);
 		let mut out = ResponseDelta::default();
 		// OpenAI Responses
 		match v.get("type").and_then(|t| t.as_str()) {
 			Some("response.output_text.delta") => {
-				out.text = str_at(&v, "delta")?;
+				out.text = str_at(v, "delta")?;
 				return Some(out);
 			},
 			Some("response.reasoning_text.delta" | "response.reasoning_summary_text.delta") => {
-				out.reasoning = str_at(&v, "delta")?;
+				out.reasoning = str_at(v, "delta")?;
 				return Some(out);
 			},
 			_ => {},
@@ -501,8 +708,14 @@ impl http_body::Body for GuardedSseBody {
 							loop {
 								match this.sse_decoder.decode(this.decode_buffer) {
 									Ok(Some(sse_frame)) => {
-										if let Some(delta) = GuardedSseBody::extract_text_delta(sse_frame) {
+										let Some(v) = GuardedSseBody::frame_json(sse_frame) else {
+											continue;
+										};
+										if let Some(delta) = GuardedSseBody::extract_text_delta(&v) {
 											this.pending_text.append(delta);
+										}
+										if let Some(tools) = this.tool_calls.as_mut() {
+											tools.observe(&v);
 										}
 									},
 									Ok(None) => break,
@@ -518,17 +731,37 @@ impl http_body::Body for GuardedSseBody {
 							}
 
 							let over_limit = *this.held_bytes >= *this.buffer_limit;
-							if this.pending_text.len() >= *this.eval_threshold || over_limit {
-								// Having a full buffer but empty text implies that the
+							let tools_open = this.tool_calls.as_ref().is_some_and(ToolCalls::is_open);
+							// A tool call too large to hold cannot be evaluated whole.
+							if over_limit
+								&& tools_open
+								&& this.evaluators.iter().any(|e| {
+									(e.covers(ContentScope::ToolInput) || e.covers(ContentScope::ToolOutput))
+										&& e.failure_mode() == FailureMode::FailClosed
+								}) {
+								warn!("streaming tool call exceeded the guardrail buffer, failing closed");
+								this.held_frames.clear();
+								*this.held_bytes = 0;
+								*this.state = GuardedBodyState::Blocked(Bytes::from_static(FAIL_CLOSED_BODY));
+								continue;
+							}
+							let tools_done = this.tool_calls.as_ref().is_some_and(|t| !t.done.is_empty());
+							let ready =
+								!tools_open && (tools_done || this.pending_text.len() >= *this.eval_threshold);
+							if ready || over_limit {
+								let mut windows = this.pending_text.take_windows(this.overlap_tail);
+								if let Some(tools) = this.tool_calls.as_mut() {
+									windows.append(&mut tools.done);
+								}
+								// Having a full buffer but nothing to evaluate implies that the
 								// buffer is full of non-text frames (e.g. control frames or unsupported SSE formats that fail to decode).
 								// In that case, flush the buffer as-is without evaluation, to avoid stalling on unprocessable content.
-								if this.pending_text.is_empty() {
+								if windows.is_empty() {
 									let queue: VecDeque<Bytes> = this.held_frames.drain(..).collect();
 									*this.held_bytes = 0;
 									*this.state = GuardedBodyState::Flushing { queue, eof: false };
 									continue;
 								}
-								let windows = this.pending_text.take_windows(this.overlap_tail);
 								let evaluators = std::mem::take(this.evaluators);
 								let fut: EvalFuture = Box::pin(evaluate_windows(evaluators, windows));
 								*this.state = GuardedBodyState::Evaluating { fut, eof: false };
@@ -538,8 +771,14 @@ impl http_body::Body for GuardedSseBody {
 							loop {
 								match this.sse_decoder.decode_eof(this.decode_buffer) {
 									Ok(Some(sse_frame)) => {
-										if let Some(delta) = GuardedSseBody::extract_text_delta(sse_frame) {
+										let Some(v) = GuardedSseBody::frame_json(sse_frame) else {
+											continue;
+										};
+										if let Some(delta) = GuardedSseBody::extract_text_delta(&v) {
 											this.pending_text.append(delta);
+										}
+										if let Some(tools) = this.tool_calls.as_mut() {
+											tools.observe(&v);
 										}
 									},
 									Ok(None) => break,
@@ -551,14 +790,18 @@ impl http_body::Body for GuardedSseBody {
 								}
 							}
 
-							if this.pending_text.is_empty() {
+							let mut windows = this.pending_text.take_windows(this.overlap_tail);
+							if let Some(tools) = this.tool_calls.as_mut() {
+								tools.finish();
+								windows.append(&mut tools.done);
+							}
+							if windows.is_empty() {
 								let queue: VecDeque<Bytes> = this.held_frames.drain(..).collect();
 								*this.held_bytes = 0;
 								*this.state = GuardedBodyState::Flushing { queue, eof: true };
 								continue;
 							}
 
-							let windows = this.pending_text.take_windows(this.overlap_tail);
 							let evaluators = std::mem::take(this.evaluators);
 							let fut: EvalFuture = Box::pin(evaluate_windows(evaluators, windows));
 							*this.state = GuardedBodyState::Evaluating { fut, eof: true };
@@ -784,12 +1027,13 @@ mod tests {
 	}
 
 	fn text_delta(chunk: serde_json::Value) -> Option<Vec<String>> {
-		GuardedSseBody::extract_text_delta(SseFrame::Event(Event {
-			id: None,
-			name: "message".into(),
-			data: Bytes::from(chunk.to_string()),
-		}))
-		.map(|mut delta| delta.take_windows(&mut ResponseDelta::default()))
+		GuardedSseBody::extract_text_delta(&chunk).map(|mut delta| {
+			delta
+				.take_windows(&mut ResponseDelta::default())
+				.into_iter()
+				.map(|(_, window)| window)
+				.collect()
+		})
 	}
 
 	#[test]
@@ -1019,6 +1263,140 @@ mod tests {
 		assert_eq!(tail_chars(s2, 2), "é");
 	}
 
+	struct ScopedEvaluator {
+		pattern: regex::Regex,
+		scope: ContentScope,
+		mode: FailureMode,
+	}
+
+	#[async_trait::async_trait]
+	impl StreamingEvaluator for ScopedEvaluator {
+		fn failure_mode(&self) -> FailureMode {
+			self.mode
+		}
+
+		fn covers(&self, scope: ContentScope) -> bool {
+			scope == self.scope
+		}
+
+		async fn evaluate(
+			&mut self,
+			window: &str,
+		) -> anyhow::Result<Option<StreamingGuardrailOutcome>> {
+			Ok(
+				self
+					.pattern
+					.is_match(window)
+					.then(|| StreamingGuardrailOutcome::Blocked(Bytes::from_static(b"blocked"))),
+			)
+		}
+	}
+
+	fn scoped(scope: ContentScope) -> Vec<Box<dyn StreamingEvaluator>> {
+		vec![Box::new(ScopedEvaluator {
+			pattern: regex::Regex::new("forbidden").unwrap(),
+			scope,
+			mode: FailureMode::FailClosed,
+		})]
+	}
+
+	fn json_frames(events: Vec<serde_json::Value>) -> Vec<Bytes> {
+		events
+			.into_iter()
+			.map(|e| sse_bytes(&e.to_string()))
+			.collect()
+	}
+
+	/// A model calls a tool with `{"cmd":"forbidden"}`, the arguments split mid-word.
+	fn tool_call_stream(api: &str) -> Vec<serde_json::Value> {
+		use serde_json::json;
+		let (a, b) = (r#"{"cmd":"forb"#, r#"idden"}"#);
+		match api {
+			"completions" => {
+				let args = |s: &str| json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": s}}]}}]});
+				vec![
+					json!({"choices": [{"index": 0, "delta": {"content": "running it"}}]}),
+					args(a),
+					args(b),
+					json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+				]
+			},
+			"anthropic" => {
+				let args = |s: &str| json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": s}});
+				vec![
+					json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "running it"}}),
+					json!({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "t1", "name": "run", "input": {}}}),
+					args(a),
+					args(b),
+					json!({"type": "content_block_stop", "index": 1}),
+				]
+			},
+			"responses" => {
+				let item = |args: &str, status: &str| json!({"type": "function_call", "id": "fc1", "call_id": "c1", "name": "run", "arguments": args, "status": status});
+				let args = |s: &str| json!({"type": "response.function_call_arguments.delta", "output_index": 1, "item_id": "fc1", "delta": s});
+				vec![
+					json!({"type": "response.output_text.delta", "delta": "running it"}),
+					json!({"type": "response.output_item.added", "output_index": 1, "item": item("", "in_progress")}),
+					args(a),
+					args(b),
+					json!({"type": "response.output_item.done", "output_index": 1, "item": item(&format!("{a}{b}"), "completed")}),
+				]
+			},
+			"gemini" => vec![
+				json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "running it"}]}}]}),
+				json!({"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "run", "args": {"cmd": "forbidden"}}}]}}]}),
+			],
+			_ => unreachable!(),
+		}
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn tool_input_guard_blocks_streamed_tool_call(
+		#[values("completions", "anthropic", "responses", "gemini")] api: &str,
+	) {
+		// a tiny threshold would release the call fragment by fragment if it were windowed
+		let body = make_body(json_frames(tool_call_stream(api)));
+		let guarded =
+			GuardedSseBody::with_threshold(body, scoped(ContentScope::ToolInput), 1024 * 1024, None, 1);
+		let bytes = guarded.collect().await.unwrap().to_bytes();
+		assert!(contains(&bytes, b"guardrail_blocked"), "{api}");
+		assert!(!contains(&bytes, b"forb"), "{api}: partial call leaked");
+		// message text before the call is not held behind it
+		assert!(contains(&bytes, b"running it"), "{api}");
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn messages_guard_ignores_tool_call(
+		#[values("completions", "anthropic", "responses", "gemini")] api: &str,
+	) {
+		let body = make_body(json_frames(tool_call_stream(api)));
+		let guarded = GuardedSseBody::new(body, scoped(ContentScope::Messages), 1024 * 1024, None);
+		let bytes = guarded.collect().await.unwrap().to_bytes();
+		assert!(!contains(&bytes, b"guardrail_blocked"), "{api}");
+	}
+
+	#[tokio::test]
+	async fn tool_guard_ignores_message_text() {
+		let body = make_body(vec![delta_bytes("forbidden"), sse_bytes("[DONE]")]);
+		let guarded = GuardedSseBody::new(body, scoped(ContentScope::ToolInput), 1024 * 1024, None);
+		let bytes = guarded.collect().await.unwrap().to_bytes();
+		assert!(!contains(&bytes, b"guardrail_blocked"));
+	}
+
+	#[tokio::test]
+	async fn oversized_tool_call_fails_closed() {
+		// a large file write outgrows the buffer before the call completes
+		let mut events = tool_call_stream("anthropic");
+		events.truncate(3);
+		let body = make_body(json_frames(events));
+		let guarded = GuardedSseBody::new(body, scoped(ContentScope::ToolInput), 200, None);
+		let bytes = guarded.collect().await.unwrap().to_bytes();
+		assert!(contains(&bytes, b"guardrail_blocked"));
+		assert!(!contains(&bytes, b"forb"));
+	}
+
 	#[tokio::test]
 	async fn evaluate_window_fail_closed_blocks_on_error() {
 		use crate::llm::policy::FailureMode;
@@ -1026,7 +1404,9 @@ mod tests {
 			mode: FailureMode::FailClosed,
 		})];
 		assert_eq!(
-			evaluate_window(&mut evs, "some text").await.as_deref(),
+			evaluate_window(&mut evs, ContentScope::Messages, "some text")
+				.await
+				.as_deref(),
 			Some(&b"Content blocked by guardrail policy"[..])
 		);
 	}
@@ -1037,6 +1417,10 @@ mod tests {
 		let mut evs: Vec<Box<dyn StreamingEvaluator>> = vec![Box::new(ErrorEvaluator {
 			mode: FailureMode::FailOpen,
 		})];
-		assert!(evaluate_window(&mut evs, "some text").await.is_none());
+		assert!(
+			evaluate_window(&mut evs, ContentScope::Messages, "some text")
+				.await
+				.is_none()
+		);
 	}
 }

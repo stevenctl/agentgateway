@@ -739,13 +739,18 @@ impl ResponseType for Response {
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(crate::types::ResponseText, &mut String)) {
 		for c in &mut self.content {
 			let signed = crate::types::has_signature(&c.rest);
-			let mut visit =
-				|scope, text: &mut String| f(crate::types::ResponseText { scope, signed }, text);
-			match &mut c.text {
-				Some(text) => visit(ContentScope::Messages, text),
-				None => visit_part_text(&mut c.rest, &mut visit),
-			}
+			visit_response_content_text(c, &mut |scope, text| {
+				f(crate::types::ResponseText { scope, signed }, text)
+			});
 		}
+	}
+}
+
+/// Visit one response content block; shared with the streaming guard path.
+pub fn visit_response_content_text(c: &mut Content, f: &mut dyn FnMut(ContentScope, &mut String)) {
+	match &mut c.text {
+		Some(text) => f(ContentScope::Messages, text),
+		None => visit_part_text(&mut c.rest, f),
 	}
 }
 

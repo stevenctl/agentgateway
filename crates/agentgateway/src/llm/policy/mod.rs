@@ -308,14 +308,6 @@ impl PromptGuard {
 		}
 		for guard in &self.response {
 			guard.validate_scope()?;
-			if self.streaming.is_enabled()
-				&& guard
-					.scope
-					.iter()
-					.any(|scope| *scope != ContentScope::Messages)
-			{
-				return Err("streaming response guards only support the messages scope".into());
-			}
 		}
 		Ok(())
 	}
@@ -455,6 +447,11 @@ pub trait StreamingEvaluator: Send {
 	/// Guard types without an explicit `failure_mode` field default to `FailClosed`.
 	fn failure_mode(&self) -> FailureMode {
 		FailureMode::FailClosed
+	}
+
+	/// Whether windows of this scope are evaluated.
+	fn covers(&self, _scope: ContentScope) -> bool {
+		true
 	}
 }
 

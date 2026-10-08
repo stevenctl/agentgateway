@@ -1315,39 +1315,47 @@ impl ResponseType for Response {
 
 	fn visit_text_mut(&mut self, f: &mut dyn FnMut(crate::types::ResponseText, &mut String)) {
 		for o in &mut self.output {
-			if let OutputItem::Program(program) = o {
-				f(
-					crate::types::ResponseText {
-						scope: ContentScope::ToolInput,
-						signed: true,
-					},
-					&mut program.code,
-				);
+			visit_output_item_text(o, f);
+		}
+	}
+}
+
+/// Visit one response output item; shared with the streaming guard path.
+pub fn visit_output_item_text(
+	o: &mut OutputItem,
+	f: &mut dyn FnMut(crate::types::ResponseText, &mut String),
+) {
+	if let OutputItem::Program(program) = o {
+		f(
+			crate::types::ResponseText {
+				scope: ContentScope::ToolInput,
+				signed: true,
+			},
+			&mut program.code,
+		);
+		return;
+	}
+	let mut plain = |scope: ContentScope, text: &mut String| f(scope.into(), text);
+	let f = &mut plain;
+	let OutputItem::Message(msg) = o else {
+		visit_output_tool_item(o, f);
+		return;
+	};
+	for c in &mut msg.content {
+		if let Content::Refusal(refusal) = c {
+			f(ContentScope::Messages, &mut refusal.refusal);
+		}
+		if let Content::OutputText(t) = c {
+			if t.annotations.is_empty() && t.logprobs.is_none() {
+				f(ContentScope::Messages, &mut t.text);
 				continue;
 			}
-			let mut plain = |scope: ContentScope, text: &mut String| f(scope.into(), text);
-			let f = &mut plain;
-			let OutputItem::Message(msg) = o else {
-				visit_output_tool_item(o, f);
-				continue;
-			};
-			for c in &mut msg.content {
-				if let Content::Refusal(refusal) = c {
-					f(ContentScope::Messages, &mut refusal.refusal);
-				}
-				if let Content::OutputText(t) = c {
-					if t.annotations.is_empty() && t.logprobs.is_none() {
-						f(ContentScope::Messages, &mut t.text);
-						continue;
-					}
-					// offset-based metadata cannot survive a text rewrite
-					let original = t.text.clone();
-					f(ContentScope::Messages, &mut t.text);
-					if t.text != original {
-						t.annotations.clear();
-						t.logprobs = None;
-					}
-				}
+			// offset-based metadata cannot survive a text rewrite
+			let original = t.text.clone();
+			f(ContentScope::Messages, &mut t.text);
+			if t.text != original {
+				t.annotations.clear();
+				t.logprobs = None;
 			}
 		}
 	}

@@ -3452,36 +3452,6 @@ fn prompt_guard_scope_support() {
 	.unwrap();
 }
 
-#[test]
-fn streaming_response_scope_validation() {
-	for scope in ["messages", "toolInput", "toolOutput", "systemPrompt"] {
-		let config = serde_json::json!({
-			"streaming": "Enabled",
-			"request": [{"regex": {"rules": []}, "scope": ["toolInput", "toolOutput"]}],
-			"response": [{"regex": {"rules": []}, "scope": ["messages", scope]}]
-		});
-		let result = serde_json::from_value::<PromptGuard>(config.clone())
-			.unwrap()
-			.validate();
-		if scope == "messages" {
-			result.unwrap();
-		} else {
-			assert!(
-				result
-					.unwrap_err()
-					.to_string()
-					.contains("streaming response guards only support the messages scope")
-			);
-		}
-		let mut config = config;
-		config["streaming"] = serde_json::json!("Disabled");
-		serde_json::from_value::<PromptGuard>(config)
-			.unwrap()
-			.validate()
-			.unwrap();
-	}
-}
-
 #[cfg(test)]
 #[rstest::rstest]
 #[case::anthropic_mask(

@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use websocket_sans_io::{FrameInfo, Opcode, WebsocketFrameEncoder, WebsocketFrameEvent};
 
 use crate::llm::policy::PromptGuard;
-use crate::llm::{LLMInfo, LLMResponse, TokenGapSummary};
+use crate::llm::{ContentScope, LLMInfo, LLMResponse, TokenGapSummary};
 use crate::proxy::httpproxy::PolicyClient;
 use crate::telemetry::log::AsyncLog;
 
@@ -488,7 +488,9 @@ pub async fn guarded_realtime_proxy<C, S>(
 										let window = format!("{overlap_tail}{batch}");
 										overlap_tail = tail_chars(&window, OVERLAP_BYTES).to_string();
 
-										if let Some(blocked_body) = evaluate_window(&mut evaluators, &window).await {
+										if let Some(blocked_body) =
+											evaluate_window(&mut evaluators, ContentScope::Messages, &window).await
+										{
 											delta_hold.clear();
 											// Clear text-state so a blocked response's content does not
 											// bleed into the next response's evaluation window.
@@ -521,7 +523,8 @@ pub async fn guarded_realtime_proxy<C, S>(
 									if !pending_text.is_empty() {
 										let batch = std::mem::take(&mut pending_text);
 										let window = format!("{overlap_tail}{batch}");
-										blocked_body = evaluate_window(&mut evaluators, &window).await;
+										blocked_body =
+											evaluate_window(&mut evaluators, ContentScope::Messages, &window).await;
 									}
 									overlap_tail.clear();
 

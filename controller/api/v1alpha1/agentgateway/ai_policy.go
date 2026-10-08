@@ -406,7 +406,6 @@ type PromptguardResponse struct {
 //		    action: MASK
 //
 // +kubebuilder:validation:AtLeastOneFieldSet:fields=request;response
-// +kubebuilder:validation:XValidation:rule="!has(self.streaming) || self.streaming != 'Enabled' || !has(self.response) || self.response.all(g, !has(g.scope) || g.scope.all(s, s == 'Messages'))",message="streaming response guards only support the Messages scope"
 type AIPromptGuard struct {
 	// Apply prompt guards to streaming responses and realtime websocket messages.
 	// Defaults to disabled to preserve streaming throughput unless explicitly enabled.
