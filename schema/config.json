@@ -5788,6 +5788,10 @@
         "action": {
           "description": "Whether to enforce the webhook's verdict or only observe it.\nDefaults to `reject` (enforce).",
           "$ref": "#/$defs/RejectAuditAction"
+        },
+        "messageParts": {
+          "description": "Include scoped tool calls, tool results and reasoning as `parts` in webhook request\nmessages. Defaults to false; both settings use the same content and write-back rules.\nMasks may edit text but cannot change message roles or counts, or returned part types\nor counts. Omitted parts are left untouched; returned parts take precedence over content.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,

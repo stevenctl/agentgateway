@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
 	ContentScope, NormalizedMessage, NormalizedMessagePart, OutputMessage, OutputMessagePart,
-	RequestText, RequestType, ResponseType, SimpleChatCompletionMessage, visit_json_at,
+	RequestText, RequestType, RequestVisitor, ResponseType, SimpleChatCompletionMessage,
+	visit_json_at,
 };
 use crate::webhook::{Message, ResponseChoice};
 use crate::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse};
@@ -554,65 +555,58 @@ impl RequestType for Request {
 		get_messages_v2_helper(&self.messages, &self.system)
 	}
 
-	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>) {
-		let (system_prompts, message_prompts): (Vec<_>, Vec<_>) = messages
-			.into_iter()
-			.partition(|m| m.role.as_str() == "system");
-
-		self.system = if system_prompts.is_empty() {
-			None
-		} else {
-			Some(TextBlock::Array(
-				system_prompts
-					.into_iter()
-					.map(|p| TextPart::Text {
-						r#type: "text".to_string(),
-						text: p.content.to_string(),
-						rest: Default::default(),
-					})
-					.collect(),
-			))
-		};
-		self.messages = message_prompts.into_iter().map(Into::into).collect();
-	}
-
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(RequestText, &mut String)) {
-		// get_messages() omits an empty system prompt, so it takes no index
-		let has_system = match &self.system {
-			Some(TextBlock::Text(text)) => !text.is_empty(),
-			Some(TextBlock::Array(parts)) => parts
-				.iter()
-				.any(|part| part.text().is_some_and(|text| !text.is_empty())),
-			None => false,
-		};
-		let system = if has_system {
-			RequestText::in_message(ContentScope::SystemPrompt, 0)
-		} else {
-			ContentScope::SystemPrompt.into()
-		};
+	fn visit_request_mut(&mut self, v: &mut dyn RequestVisitor) {
+		let system = ContentScope::SystemPrompt.into();
+		if self.system.is_some() {
+			v.message("system");
+		}
 		match &mut self.system {
-			Some(TextBlock::Text(text)) => f(system, text),
+			Some(TextBlock::Text(text)) => v.text(system, text),
 			Some(TextBlock::Array(parts)) => {
+				for part in parts.iter() {
+					if let TextPart::Text { text, rest, .. } = part
+						&& crate::types::has_signature(rest)
+					{
+						v.signed_text(system, text);
+					}
+				}
 				crate::types::scan_text_runs(
 					parts,
 					"\n",
 					TextPart::text_mut,
 					TextPart::rest_mut,
 					PRESERVED_REST_KEYS,
-					&mut |text| f(system, text),
+					&mut |text| v.text(system, text),
 				);
 			},
 			None => {},
 		}
-		for (index, msg) in self.messages.iter_mut().enumerate() {
-			let content =
-				RequestText::in_message(ContentScope::Messages, index + usize::from(has_system));
+		for msg in &mut self.messages {
+			v.message(&msg.role);
+			let content = ContentScope::Messages.into();
 			match &mut msg.content {
-				Some(ContentBlock::Text(text)) => f(content, text),
+				Some(ContentBlock::Text(text)) => v.text(content, text),
 				Some(ContentBlock::Array(parts)) => {
 					for part in parts.iter_mut() {
+						if let ContentPart::Text { text, rest, .. } = part
+							&& crate::types::has_signature(rest)
+						{
+							v.signed_text(content, text);
+						}
 						if let ContentPart::Unknown(value) = part {
-							visit_tool_part_text(value, &mut |scope, text| f(scope.into(), text));
+							let signed = crate::types::has_signature(value);
+							let reasoning = value.get("type").and_then(|t| t.as_str()) == Some("thinking");
+							visit_part_text(value, &mut |scope, text| {
+								let kind = RequestText {
+									reasoning,
+									..scope.into()
+								};
+								if signed {
+									v.signed_text(kind, text);
+								} else {
+									v.text(kind, text);
+								}
+							});
 						}
 					}
 					crate::types::scan_text_runs(
@@ -621,7 +615,7 @@ impl RequestType for Request {
 						ContentPart::text_mut,
 						ContentPart::rest_mut,
 						PRESERVED_REST_KEYS,
-						&mut |text| f(content, text),
+						&mut |text| v.text(content, text),
 					);
 				},
 				None => {},
@@ -668,15 +662,6 @@ fn normalized_anthropic_part(part: &ContentPart) -> Option<NormalizedMessagePart
 // unknown items should be logged for future review
 // https://github.com/anthropics/anthropic-sdk-typescript/blob/main/.stats.yml
 // may give us a way to keep an eye on changes
-fn visit_tool_part_text(
-	value: &mut serde_json::Value,
-	f: &mut dyn FnMut(ContentScope, &mut String),
-) {
-	if !crate::types::has_signature(value) {
-		visit_part_text(value, f);
-	}
-}
-
 fn visit_part_text(value: &mut serde_json::Value, f: &mut dyn FnMut(ContentScope, &mut String)) {
 	match value.get("type").and_then(|t| t.as_str()) {
 		Some(

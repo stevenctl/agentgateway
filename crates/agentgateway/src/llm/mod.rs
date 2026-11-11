@@ -10,7 +10,7 @@ pub use agent_llm::tokenizer::{num_tokens, preload_tokenizers};
 pub use agent_llm::{
 	AIError, CacheTokenConvention, ChatFormat, ContentScope, DetectedOperation, InputFormat, LLMInfo,
 	LLMRequest, LLMRequestParams, LLMResponse, LogContentFields, PromptCachingConfig, Provider,
-	ProviderState, RequestText, RequestType, ResponseText, ResponseType, RouteType,
+	ProviderState, RequestText, RequestType, RequestVisitor, ResponseText, ResponseType, RouteType,
 	SimpleChatCompletionMessage, TokenGapSummary, anthropic, conversion, copilot, custom, gemini,
 	logged_response_parsing, openai, types,
 };

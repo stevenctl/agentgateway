@@ -24,7 +24,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::{
 	ContentScope, NormalizedMessage, NormalizedMessagePart, OutputMessage, OutputMessagePart,
-	RequestText, ResponseType, vertex_gemini as vg,
+	RequestText, RequestVisitor, ResponseType, vertex_gemini as vg,
 };
 use crate::{
 	AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse, RequestType,
@@ -159,12 +159,6 @@ fn visit_audio_transcription(
 // visit every part (that is represented in the typed SDK)
 // unknown items should be logged for future review
 // https://ai.google.dev/api/generate-content#Part
-fn visit_tool_part_text(part: &mut vg::Part, f: &mut dyn FnMut(ContentScope, &mut String)) {
-	if !part.has_signature() {
-		visit_part_text(part, f);
-	}
-}
-
 fn visit_part_text(part: &mut vg::Part, f: &mut dyn FnMut(ContentScope, &mut String)) {
 	match part {
 		vg::Part::Text(p) if p.thought == Some(true) => f(ContentScope::Messages, &mut p.text),
@@ -313,36 +307,57 @@ impl RequestType for Request {
 		get_messages_v2_helper(&self.inner.contents, &self.inner.system_instruction)
 	}
 
-	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>) {
-		set_messages_helper(
-			&mut self.inner.contents,
-			&mut self.inner.system_instruction,
-			messages,
-		);
-	}
-
 	fn to_value(&self) -> serde_json::Result<serde_json::Value> {
 		serde_json::to_value(&self.inner)
 	}
 
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(RequestText, &mut String)) {
-		// get_messages() omits an empty system instruction, so it takes no index
-		let mut next_message = 0;
+	fn visit_request_mut(&mut self, v: &mut dyn RequestVisitor) {
 		if let Some(system) = &mut self.inner.system_instruction {
-			let text_ref = if joined_text(system, '\n').is_empty() {
-				ContentScope::SystemPrompt.into()
-			} else {
-				next_message += 1;
-				RequestText::in_message(ContentScope::SystemPrompt, 0)
-			};
-			visit_content_text(system, &mut |text| f(text_ref, text));
-		}
-		for (index, content) in self.inner.contents.iter_mut().enumerate() {
-			for part in &mut content.parts {
-				visit_tool_part_text(part, &mut |scope, text| f(scope.into(), text));
+			v.message("system");
+			let text_ref = ContentScope::SystemPrompt.into();
+			for part in &system.parts {
+				if part.has_signature()
+					&& let vg::Part::Text(p) = part
+				{
+					v.signed_text(text_ref, &p.text);
+				}
 			}
-			let text_ref = RequestText::in_message(ContentScope::Messages, next_message + index);
-			visit_content_text(content, &mut |text| f(text_ref, text));
+			visit_content_text(system, &mut |text| v.text(text_ref, text));
+		}
+		for content in &mut self.inner.contents {
+			v.message(match content.role.as_deref().unwrap_or("user") {
+				"model" => "assistant",
+				role => role,
+			});
+			for part in &mut content.parts {
+				let reasoning = matches!(part, vg::Part::Text(p) if p.thought == Some(true));
+				let signed = part.has_signature();
+				if signed && let vg::Part::Text(p) = part {
+					v.signed_text(
+						RequestText {
+							reasoning,
+							in_content: true,
+							..ContentScope::Messages.into()
+						},
+						&p.text,
+					);
+				} else {
+					visit_part_text(part, &mut |scope, text| {
+						let kind = RequestText {
+							reasoning,
+							in_content: reasoning,
+							..scope.into()
+						};
+						if signed {
+							v.signed_text(kind, text);
+						} else {
+							v.text(kind, text);
+						}
+					});
+				}
+			}
+			let text_ref = ContentScope::Messages.into();
+			visit_content_text(content, &mut |text| v.text(text_ref, text));
 		}
 	}
 }
@@ -483,15 +498,11 @@ impl RequestType for CountTokensRequest {
 		get_messages_v2_helper(&self.contents, &self.system_instruction)
 	}
 
-	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>) {
-		set_messages_helper(&mut self.contents, &mut self.system_instruction, messages);
-	}
-
 	fn to_value(&self) -> serde_json::Result<serde_json::Value> {
 		serde_json::to_value(self)
 	}
 
-	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(crate::types::RequestText, &mut String)) {
+	fn visit_request_mut(&mut self, _v: &mut dyn crate::types::RequestVisitor) {
 		unimplemented!(
 			"visit_text_mut is used for prompt guard; prompt guard is disabled for gemini countTokens."
 		)
@@ -540,36 +551,6 @@ fn get_messages_helper(
 		}
 	}));
 	out
-}
-
-fn set_messages_helper(
-	contents: &mut Vec<vg::Content>,
-	system_instruction: &mut Option<vg::Content>,
-	messages: Vec<SimpleChatCompletionMessage>,
-) {
-	let (system, chat) = partition_system(messages);
-	if !system.is_empty() {
-		let text = system.iter().map(|m| m.content.as_str()).join("\n");
-		match system_instruction {
-			Some(si) => set_content_text(si, &text),
-			None => {
-				*system_instruction = Some(vg::Content {
-					role: None,
-					parts: vec![text_part(&text)],
-					rest: Default::default(),
-				})
-			},
-		}
-	}
-	if chat.len() == contents.len() {
-		// Same shape get_messages() returned: rewrite the text in place so non-text
-		// parts (inlineData, functionCall, ...) survive guardrail masking.
-		for (content, msg) in contents.iter_mut().zip(chat) {
-			set_content_text(content, &msg.content);
-		}
-	} else {
-		*contents = chat.into_iter().map(content_from_message).collect();
-	}
 }
 
 fn prepend_prompts_helper(
@@ -708,7 +689,7 @@ fn set_visible_text(content: &mut vg::Content, text: &str) {
 	let mut replaced = false;
 	content.parts.retain_mut(|p| match p {
 		vg::Part::Text(t) if t.thought != Some(true) => {
-			// Masking to "" drops the part instead of leaving `{"text":""}`; see `set_content_text`.
+			// Masking to "" drops the part instead of leaving `{"text":""}`.
 			let keep = !replaced && !text.is_empty();
 			replaced = true;
 			if keep {
@@ -718,7 +699,7 @@ fn set_visible_text(content: &mut vg::Content, text: &str) {
 		},
 		_ => true,
 	});
-	// A tool-call-only candidate has no visible text; see `set_content_text`.
+	// A tool-call-only candidate has no visible text.
 	if !replaced && !text.is_empty() {
 		content.parts.push(text_part(text));
 	}
@@ -782,32 +763,6 @@ fn joined_text(content: &vg::Content, sep: char) -> Strng {
 			acc
 		});
 	strng::new(&text)
-}
-
-fn set_content_text(content: &mut vg::Content, text: &str) {
-	// Collapse all text parts into one carrying the new text; everything else is untouched.
-	// An empty replacement (a guardrail masking the whole turn away) drops every text part
-	// rather than leaving `{"text":""}`, which Vertex rejects with "empty text parameter". A
-	// content left with no parts at all serializes without a `parts` key, the same shape Google
-	// itself emits for a candidate it blocked.
-	let mut replaced = false;
-	content.parts.retain_mut(|p| match p {
-		vg::Part::Text(t) => {
-			let keep = !replaced && !text.is_empty();
-			replaced = true;
-			if keep {
-				t.text = text.to_string();
-			}
-			keep
-		},
-		_ => true,
-	});
-	// Turns made only of functionCall/functionResponse parts read back as empty text; adding a
-	// part for that would both corrupt the passthrough and make Vertex reject the request
-	// ("empty text parameter").
-	if !replaced && !text.is_empty() {
-		content.parts.push(text_part(text));
-	}
 }
 
 fn content_from_message(m: SimpleChatCompletionMessage) -> vg::Content {
@@ -935,39 +890,8 @@ mod tests {
 		assert_eq!(msgs[3].role, "user");
 	}
 
-	/// Guardrail masking rewrites every message, not just the ones it changed, so an unchanged
-	/// round-trip must leave the wire body exactly as it arrived.
 	#[test]
-	fn get_then_set_messages_unchanged_is_a_no_op() {
-		let body = json!({
-			"systemInstruction": { "parts": [{ "text": "be brief" }] },
-			"contents": [
-				{ "role": "user", "parts": [
-					{ "text": "what is in this?" },
-					{ "inlineData": { "mimeType": "image/png", "data": "iVBORw0KGgo=" } }
-				] },
-				{ "role": "model", "parts": [
-					{ "text": "thinking", "thought": true, "thoughtSignature": "sig-a" },
-					{ "functionCall": { "name": "get_weather", "id": "fc_1", "args": { "city": "Boston" } },
-						"thoughtSignature": "sig-b" }
-				] },
-				{ "role": "user", "parts": [
-					{ "functionResponse": { "name": "get_weather", "id": "fc_1", "response": { "c": 12 } } }
-				] }
-			]
-		});
-		let mut req = request(body.clone());
-		let msgs = req.get_messages();
-		req.set_messages(msgs);
-		assert_eq!(
-			serde_json::to_value(&req.inner).expect("serialize"),
-			body,
-			"an unchanged round-trip must not rewrite the body"
-		);
-	}
-
-	#[test]
-	fn get_messages_round_trips_roles() {
+	fn get_messages_and_prompt_enrichment_map_roles() {
 		let body = json!({
 			"contents": [
 				{ "role": "user", "parts": [{ "text": "a" }] },
@@ -980,13 +904,11 @@ mod tests {
 			msgs.iter().map(|m| m.role.as_str()).collect::<Vec<_>>(),
 			["user", "assistant"]
 		);
-		// Force the rebuild path (the count no longer matches) so role mapping runs both ways.
-		let mut msgs = msgs;
-		msgs.push(SimpleChatCompletionMessage {
+		// Prompt enrichment maps the normalized assistant role back to model.
+		req.append_prompts(vec![SimpleChatCompletionMessage {
 			role: strng::literal!("assistant"),
 			content: strng::literal!("c"),
-		});
-		req.set_messages(msgs);
+		}]);
 		assert_eq!(
 			req
 				.inner
@@ -995,71 +917,6 @@ mod tests {
 				.map(|c| c.role.as_deref().unwrap_or_default())
 				.collect::<Vec<_>>(),
 			["user", "model", "model"]
-		);
-	}
-
-	#[test]
-	fn masking_one_message_leaves_multimodal_and_tool_turns_untouched() {
-		let body = json!({
-			"contents": [
-				{ "role": "user", "parts": [
-					{ "text": "my SSN is 123-45-6789" },
-					{ "inlineData": { "mimeType": "image/png", "data": "iVBORw0KGgo=" } }
-				] },
-				{ "role": "model", "parts": [
-					{ "functionCall": { "name": "lookup", "id": "fc_1", "args": { "q": "x" } } }
-				] }
-			]
-		});
-		let mut req = request(body.clone());
-		let mut msgs = req.get_messages();
-		msgs[0].content = "my SSN is [MASKED]".into();
-		req.set_messages(msgs);
-
-		let out = serde_json::to_value(&req.inner).expect("serialize");
-		assert_eq!(out["contents"][0]["parts"][0]["text"], "my SSN is [MASKED]");
-		assert_eq!(
-			out["contents"][0]["parts"][1], body["contents"][0]["parts"][1],
-			"inlineData must survive masking byte-identically"
-		);
-		assert_eq!(
-			out["contents"][1], body["contents"][1],
-			"a tool-call turn with no text must not be rewritten"
-		);
-	}
-
-	#[test]
-	fn masking_a_turn_to_empty_drops_the_text_part() {
-		// A `{"text":""}` part is what Vertex rejects with "empty text parameter", so an empty
-		// mask must remove the part. On a mixed turn the remaining parts keep the turn valid; on
-		// a text-only turn the content is left with no parts at all, which serializes with no
-		// `parts` key.
-		let mut req = request(json!({
-			"contents": [
-				{ "role": "user", "parts": [{ "text": "secret" }] },
-				{ "role": "user", "parts": [
-					{ "text": "secret" },
-					{ "functionCall": { "name": "f", "id": "fc_1", "args": {} } }
-				] }
-			]
-		}));
-		let mut msgs = req.get_messages();
-		msgs[0].content = "".into();
-		msgs[1].content = "".into();
-		req.set_messages(msgs);
-
-		let out = serde_json::to_value(&req.inner).expect("serialize");
-		assert_eq!(out["contents"][0], json!({ "role": "user" }));
-		assert_eq!(
-			out["contents"][1],
-			json!({
-				"role": "user",
-				"parts": [{ "functionCall": { "name": "f", "id": "fc_1", "args": {} } }]
-			})
-		);
-		assert!(
-			!out.to_string().contains(r#""text":"""#),
-			"no empty text part may survive: {out}"
 		);
 	}
 
@@ -1109,49 +966,6 @@ mod tests {
 			out["candidates"][0],
 			json!({ "content": { "role": "model" }, "finishReason": "STOP" })
 		);
-	}
-
-	#[test]
-	fn set_messages_preserves_non_text_parts() {
-		let mut req = request(json!({
-			"contents": [{
-				"role": "user",
-				"parts": [
-					{ "text": "describe this" },
-					{ "inlineData": { "mimeType": "image/png", "data": "iVBORw0KG..." } }
-				]
-			}]
-		}));
-		let mut msgs = req.get_messages();
-		msgs[0].content = "MASKED".into();
-		req.set_messages(msgs);
-
-		assert_eq!(req.inner.contents.len(), 1);
-		let parts = &req.inner.contents[0].parts;
-		assert_eq!(parts.len(), 2);
-		let vg::Part::Text(t) = &parts[0] else {
-			panic!("expected text part first");
-		};
-		assert_eq!(t.text, "MASKED");
-		assert!(matches!(parts[1], vg::Part::InlineData(_)));
-	}
-
-	#[test]
-	fn set_messages_rewrites_system_instruction_in_place() {
-		let mut req = request(json!({
-			"systemInstruction": { "parts": [{ "text": "secret system" }] },
-			"contents": [{ "role": "user", "parts": [{ "text": "hi" }] }]
-		}));
-		let mut msgs = req.get_messages();
-		msgs[0].content = "masked system".into();
-		req.set_messages(msgs);
-
-		let si = req.inner.system_instruction.as_ref().unwrap();
-		let vg::Part::Text(t) = &si.parts[0] else {
-			panic!("expected text part");
-		};
-		assert_eq!(t.text, "masked system");
-		assert_eq!(req.inner.contents.len(), 1);
 	}
 
 	#[test]

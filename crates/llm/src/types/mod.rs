@@ -116,25 +116,18 @@ impl From<ContentScope> for ResponseText {
 #[derive(Clone, Copy, Debug)]
 pub struct RequestText {
 	pub scope: ContentScope,
-	// allows associating a RequestText to the index of the message in the
-	// simplified view of the request message list `RequestType::get_messages()`
-	pub get_messages_idx: Option<usize>,
-}
-
-impl RequestText {
-	pub(crate) fn in_message(scope: ContentScope, message: usize) -> Self {
-		Self {
-			scope,
-			get_messages_idx: Some(message),
-		}
-	}
+	/// This tool/reasoning string is also exposed in webhook `content`.
+	pub in_content: bool,
+	/// Model reasoning, such as thinking blocks. Only `messages` scoped text can be reasoning.
+	pub reasoning: bool,
 }
 
 impl From<ContentScope> for RequestText {
 	fn from(scope: ContentScope) -> Self {
 		Self {
 			scope,
-			get_messages_idx: None,
+			in_content: false,
+			reasoning: false,
 		}
 	}
 }
@@ -274,9 +267,28 @@ pub trait RequestType: Send + Sync {
 			.map(NormalizedMessage::from)
 			.collect()
 	}
-	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>);
 	fn to_value(&self) -> serde_json::Result<serde_json::Value>;
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(RequestText, &mut String));
+	/// Visit the request's editable text in order, with a `message` call before each message's text.
+	fn visit_request_mut(&mut self, v: &mut dyn RequestVisitor);
+	fn visit_text_mut(&mut self, f: &mut dyn FnMut(RequestText, &mut String)) {
+		struct Texts<'a>(&'a mut dyn FnMut(RequestText, &mut String));
+		impl RequestVisitor for Texts<'_> {
+			fn text(&mut self, text_ref: RequestText, text: &mut String) {
+				(self.0)(text_ref, text)
+			}
+		}
+		self.visit_request_mut(&mut Texts(f))
+	}
+}
+
+/// Receives a request's text from `RequestType::visit_request_mut`.
+pub trait RequestVisitor {
+	/// A message starts; texts until the next call belong to it. Gemini's `model` maps to
+	/// `assistant`; items without roles use their type (such as Responses `function_call`).
+	fn message(&mut self, _role: &str) {}
+	fn text(&mut self, text_ref: RequestText, text: &mut String);
+	/// Signed plaintext is inspectable but has no editable text position.
+	fn signed_text(&mut self, _text_ref: RequestText, _text: &str) {}
 }
 
 /// Scan runs of consecutive text parts as one `sep`-joined string: `[t1, t2, img, t3]` scans

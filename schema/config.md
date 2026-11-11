@@ -7886,6 +7886,7 @@ These types are used by many fields. Fields of these types link here instead of 
 |`<Guardrails>.request[].webhook.forwardHeaderMatches[].value.regex`|string||
 |`<Guardrails>.request[].webhook.failureMode`|enum|Behavior when the webhook is unreachable or returns an error.<br>Defaults to `failClosed`.<br>Possible values: `failClosed`, `failOpen`.|
 |`<Guardrails>.request[].webhook.action`|enum|Whether to enforce the webhook's verdict or only observe it.<br>Defaults to `reject` (enforce).<br>Possible values: `reject`, `audit`.|
+|`<Guardrails>.request[].webhook.messageParts`|boolean|Include scoped tool calls, tool results and reasoning as `parts` in webhook request<br>messages. Defaults to false; both settings use the same content and write-back rules.<br>Masks may edit text but cannot change message roles or counts, or returned part types<br>or counts. Omitted parts are left untouched; returned parts take precedence over content.|
 |`<Guardrails>.request[].openAIModeration`|object|Use OpenAI moderation to evaluate the prompt.|
 |`<Guardrails>.request[].openAIModeration.failureMode`|enum|Behavior when the provider is unreachable or returns an error.<br>Defaults to `failClosed`.<br>Possible values: `failClosed`, `failOpen`.|
 |`<Guardrails>.request[].openAIModeration.model`|string|Moderation model to use. Defaults to `omni-moderation-latest`.|
@@ -9352,6 +9353,7 @@ These types are used by many fields. Fields of these types link here instead of 
 |`<Guardrails>.response[].webhook.forwardHeaderMatches[].value.regex`|string||
 |`<Guardrails>.response[].webhook.failureMode`|enum|Behavior when the webhook is unreachable or returns an error.<br>Defaults to `failClosed`.<br>Possible values: `failClosed`, `failOpen`.|
 |`<Guardrails>.response[].webhook.action`|enum|Whether to enforce the webhook's verdict or only observe it.<br>Defaults to `reject` (enforce).<br>Possible values: `reject`, `audit`.|
+|`<Guardrails>.response[].webhook.messageParts`|boolean|Include scoped tool calls, tool results and reasoning as `parts` in webhook request<br>messages. Defaults to false; both settings use the same content and write-back rules.<br>Masks may edit text but cannot change message roles or counts, or returned part types<br>or counts. Omitted parts are left untouched; returned parts take precedence over content.|
 |`<Guardrails>.response[].bedrockGuardrails`|object|Use AWS Bedrock Guardrails to evaluate the response.<br>Configuration for AWS Bedrock Guardrails integration.|
 |`<Guardrails>.response[].bedrockGuardrails.failureMode`|enum|Behavior when the provider is unreachable or returns an error.<br>Defaults to `failClosed`.<br>Possible values: `failClosed`, `failOpen`.|
 |`<Guardrails>.response[].bedrockGuardrails.guardrailIdentifier`|string|The unique identifier of the guardrail|

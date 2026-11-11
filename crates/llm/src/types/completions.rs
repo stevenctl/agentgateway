@@ -703,20 +703,20 @@ impl super::RequestType for Request {
 		messages
 	}
 
-	fn set_messages(&mut self, messages: Vec<SimpleChatCompletionMessage>) {
-		self.messages = messages.into_iter().map(convert_message).collect();
-	}
-
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(super::RequestText, &mut String)) {
-		for (index, msg) in self.messages.iter_mut().enumerate() {
+	fn visit_request_mut(&mut self, v: &mut dyn super::RequestVisitor) {
+		for msg in &mut self.messages {
+			v.message(&msg.role);
 			let scope = match msg.role.as_str() {
 				"tool" | "function" => ContentScope::ToolOutput,
 				"system" | "developer" => ContentScope::SystemPrompt,
 				_ => ContentScope::Messages,
 			};
-			let content = super::RequestText::in_message(scope, index);
+			let content = super::RequestText {
+				in_content: true,
+				..scope.into()
+			};
 			match &mut msg.content {
-				Some(Content::Text(text)) => f(content, text),
+				Some(Content::Text(text)) => v.text(content, text),
 				Some(Content::Array(parts)) => {
 					super::scan_text_runs(
 						parts,
@@ -724,13 +724,31 @@ impl super::RequestType for Request {
 						|p| p.text.as_mut(),
 						|p| Some(&mut p.rest),
 						PRESERVED_REST_KEYS,
-						&mut |text| f(content, text),
+						&mut |text| v.text(content, text),
 					);
 				},
 				None => {},
 			}
 
-			let mut tool_text = |scope: ContentScope, text: &mut String| f(scope.into(), text);
+			visit_reasoning_text(&mut msg.rest, &mut |kind, text| {
+				let text_ref = super::RequestText {
+					reasoning: true,
+					..kind.scope.into()
+				};
+				if kind.signed {
+					v.signed_text(text_ref, text);
+				} else {
+					v.text(text_ref, text);
+				}
+			});
+			let mut tool_text = |scope: ContentScope, text: &mut String| v.text(scope.into(), text);
+			super::visit_json_at(&mut msg.rest, &["refusal"], scope, &mut tool_text);
+			super::visit_json_at(
+				&mut msg.rest,
+				&["audio", "transcript"],
+				scope,
+				&mut tool_text,
+			);
 			// in completions API, tool call args are json-in-json
 			// avoiding parsing means a mask can potentially break the json
 			for call in msg.tool_calls.iter_mut().flatten() {

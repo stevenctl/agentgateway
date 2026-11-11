@@ -62,11 +62,7 @@ impl RequestType for Request {
 		unimplemented!("get_messages is used for prompt guard; prompt guard is disabled for systemone.")
 	}
 
-	fn set_messages(&mut self, _messages: Vec<SimpleChatCompletionMessage>) {
-		unimplemented!("set_messages is used for prompt guard; prompt guard is disabled for systemone.")
-	}
-
-	fn visit_text_mut(&mut self, _f: &mut dyn FnMut(crate::types::RequestText, &mut String)) {
+	fn visit_request_mut(&mut self, _v: &mut dyn crate::types::RequestVisitor) {
 		unimplemented!(
 			"visit_text_mut is used for prompt guard; prompt guard is disabled for systemone."
 		)

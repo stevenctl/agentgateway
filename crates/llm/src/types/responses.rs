@@ -85,12 +85,17 @@ impl RawInputItem {
 		Some(SimpleChatCompletionMessage { role, content })
 	}
 
-	/// `message` is this item's `get_messages()` index, if it has one.
-	fn visit_text_mut(
-		&mut self,
-		message: Option<usize>,
-		f: &mut dyn FnMut(RequestText, &mut String),
-	) {
+	/// Items without a role, such as `function_call`, are named by their type.
+	fn role_or_type(&self) -> &str {
+		self
+			.0
+			.get("role")
+			.or_else(|| self.0.get("type"))
+			.and_then(Value::as_str)
+			.unwrap_or_default()
+	}
+
+	fn visit_request_mut(&mut self, v: &mut dyn RequestVisitor) {
 		if let Some(role) = self.0.get("role").and_then(|r| r.as_str()) {
 			let scope = match role {
 				"system" | "developer" => ContentScope::SystemPrompt,
@@ -98,33 +103,43 @@ impl RawInputItem {
 			};
 			let content = RequestText {
 				scope,
-				get_messages_idx: message,
+				in_content: false,
+				reasoning: false,
 			};
 			match self.0.get_mut("content") {
-				Some(Value::String(text)) => f(content, text),
+				Some(Value::String(text)) => v.text(content, text),
 				Some(Value::Array(parts)) => {
 					// assistant refusal parts carry prose under `refusal`, not `text`
 					for part in parts.iter_mut() {
 						visit_json_at(part, &["refusal"], scope, &mut |scope, text| {
-							f(scope.into(), text)
+							v.text(scope.into(), text)
 						});
 					}
-					scan_value_text_runs(parts, &mut |text| f(content, text));
+					scan_value_text_runs(parts, &mut |text| v.text(content, text));
 				},
 				_ => {},
 			}
 			return;
 		}
-		visit_tool_item_text(&mut self.0, &mut |scope, text| f(scope.into(), text));
+		let signed = has_signature(&self.0);
+		let reasoning = self.0.get("type").and_then(Value::as_str) == Some("reasoning");
+		visit_tool_item_text(&mut self.0, &mut |scope, text| {
+			let kind = RequestText {
+				reasoning,
+				..scope.into()
+			};
+			if signed {
+				v.signed_text(kind, text);
+			} else {
+				v.text(kind, text);
+			}
+		});
 	}
 }
 
 // Keep this in sync with the typed output visitor below.
 fn visit_tool_item_text(value: &mut Value, f: &mut dyn FnMut(ContentScope, &mut String)) {
 	use ContentScope::{ToolInput, ToolOutput};
-	if has_signature(value) {
-		return;
-	}
 	match value.get("type").and_then(Value::as_str) {
 		Some("function_call_output" | "custom_tool_call_output") => {
 			if let Some(output) = value.get_mut("output") {
@@ -1014,47 +1029,20 @@ impl RequestType for Request {
 		messages
 	}
 
-	fn set_messages(&mut self, mut messages: Vec<SimpleChatCompletionMessage>) {
-		if self.instructions.is_some() {
-			self.instructions = messages
-				.first()
-				.filter(|message| matches!(message.role.as_str(), "developer" | "system"))
-				.map(|message| message.content.to_string());
-			if self.instructions.is_some() {
-				messages.remove(0);
-			}
-		}
-		self.input = RequestInput::Items(
-			messages
-				.into_iter()
-				.map(RawInputItem::from_simple_message)
-				.collect(),
-		);
-	}
-
-	fn visit_text_mut(&mut self, f: &mut dyn FnMut(RequestText, &mut String)) {
-		let mut next_message = 0;
+	fn visit_request_mut(&mut self, v: &mut dyn RequestVisitor) {
 		if let Some(instructions) = &mut self.instructions {
-			f(
-				RequestText::in_message(ContentScope::SystemPrompt, next_message),
-				instructions,
-			);
-			next_message += 1;
+			v.message("system");
+			v.text(ContentScope::SystemPrompt.into(), instructions);
 		}
 		match &mut self.input {
-			RequestInput::Text(text) => f(
-				RequestText::in_message(ContentScope::Messages, next_message),
-				text,
-			),
+			RequestInput::Text(text) => {
+				v.message("user");
+				v.text(ContentScope::Messages.into(), text)
+			},
 			RequestInput::Items(items) => {
 				for item in items {
-					// only items get_messages() includes take an index
-					let message = item
-						.simple_role_and_content()
-						.is_some()
-						.then_some(next_message);
-					next_message += usize::from(message.is_some());
-					item.visit_text_mut(message, f);
+					v.message(item.role_or_type());
+					item.visit_request_mut(v);
 				}
 			},
 		}
@@ -1536,40 +1524,6 @@ mod tests {
 			usage: None,
 			rest: serde_json::Value::Null,
 		}
-	}
-
-	#[test]
-	fn instructions_round_trip_through_messages() {
-		let mut request: Request = serde_json::from_value(serde_json::json!({
-			"model": "gpt-4.1",
-			"instructions": "original instruction",
-			"input": [
-				{"role": "system", "content": "input system message"},
-				{"role": "user", "content": "hello"},
-			],
-		}))
-		.unwrap();
-		let mut messages = request.get_messages();
-		assert_eq!(messages[0].role.as_str(), "system");
-		assert_eq!(messages[1].role.as_str(), "system");
-		messages[0].content = strng::literal!("masked instruction");
-		messages[1].content = strng::literal!("masked input system message");
-
-		request.set_messages(messages);
-
-		assert_eq!(request.instructions.as_deref(), Some("masked instruction"));
-		let input = match &request.input {
-			RequestInput::Items(items) => items,
-			RequestInput::Text(_) => panic!("rewritten messages should use structured input"),
-		};
-		assert_eq!(input.len(), 2);
-		assert_eq!(input[0].0["role"], "system");
-		assert_eq!(input[0].0["content"][0]["type"], "input_text");
-		assert_eq!(
-			input[0].0["content"][0]["text"],
-			"masked input system message"
-		);
-		assert_eq!(input[1].0["role"], "user");
 	}
 
 	#[test]

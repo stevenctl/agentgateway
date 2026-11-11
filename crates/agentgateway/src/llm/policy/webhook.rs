@@ -1,11 +1,12 @@
 use ::http::header::CONTENT_TYPE;
 use ::http::{HeaderMap, HeaderValue, header};
-pub use agent_llm::webhook::{Message, ResponseChoice};
+pub use agent_llm::webhook::ResponseChoice;
 use serde::{Deserialize, Serialize};
 
 use crate::cel::RequestSnapshot;
 use crate::http::{HeaderOrPseudoValue, RequestOrResponse};
 use crate::llm::policy::{Webhook, with_default_timeout};
+use crate::llm::{ContentScope, RequestText, RequestType, RequestVisitor};
 use crate::proxy::httpproxy::PolicyClient;
 use crate::telemetry::metrics::{OutboundCallKind, OutboundCallSubtype};
 use crate::*;
@@ -81,6 +82,155 @@ pub struct PromptMessages {
 	pub messages: Vec<Message>,
 }
 
+/// Webhook content plus optional tool/reasoning parts. Some source text can appear in both.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Message {
+	/// The provider's role, or the item type for items without one (such as `function_call`).
+	pub role: String,
+	pub content: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub parts: Option<Vec<MessagePart>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct MessagePart {
+	#[serde(rename = "type")]
+	pub kind: PartKind,
+	pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartKind {
+	ToolCall,
+	ToolResult,
+	Reasoning,
+}
+
+/// Records source text positions while building the webhook messages.
+pub(super) struct MessageView {
+	pub messages: Vec<Message>,
+	positions: Vec<MessagePositions>,
+	visited: usize,
+	scope: Vec<ContentScope>,
+	include_parts: bool,
+}
+
+#[derive(Default)]
+struct MessagePositions {
+	content: Vec<Option<usize>>,
+	parts: Vec<Option<usize>>,
+}
+
+impl MessageView {
+	pub fn new(req: &mut dyn RequestType, scope: &[ContentScope], include_parts: bool) -> Self {
+		let mut view = Self {
+			messages: Vec::new(),
+			positions: Vec::new(),
+			visited: 0,
+			scope: scope.to_vec(),
+			include_parts,
+		};
+		req.visit_request_mut(&mut view);
+		view
+	}
+
+	pub fn mutation(&self, reply: &[Message]) -> Option<super::TextReplacements> {
+		if reply.len() != self.messages.len() {
+			return None;
+		}
+		let mut replacements = vec![None; self.visited];
+		for ((sent, positions), reply) in self.messages.iter().zip(&self.positions).zip(reply) {
+			if sent.role != reply.role {
+				return None;
+			}
+			if sent.content != reply.content {
+				// Joined content goes in the last text slot; a message without text cannot gain it.
+				let (last, others) = positions.content.split_last()?;
+				for position in others {
+					replacements[(*position)?] = Some(String::new());
+				}
+				replacements[(*last)?] = Some(reply.content.clone());
+			}
+			if let Some(parts) = &reply.parts {
+				let sent_parts = sent.parts.as_deref().unwrap_or_default();
+				if sent_parts.len() != parts.len() {
+					return None;
+				}
+				for ((sent, position), reply) in sent_parts.iter().zip(&positions.parts).zip(parts) {
+					if sent.kind != reply.kind {
+						return None;
+					}
+					// Apply parts last, even when echoed unchanged: presence determines precedence.
+					match position {
+						Some(position) => replacements[*position] = Some(reply.text.clone()),
+						None if sent.text != reply.text => return None,
+						None => {},
+					}
+				}
+			}
+		}
+		Some(super::TextReplacements(replacements))
+	}
+}
+
+impl RequestVisitor for MessageView {
+	fn message(&mut self, role: &str) {
+		self.messages.push(Message {
+			role: role.to_owned(),
+			content: String::new(),
+			parts: None,
+		});
+		self.positions.push(MessagePositions::default());
+	}
+
+	fn text(&mut self, kind: RequestText, text: &mut String) {
+		let position = self.visited;
+		self.visited += 1;
+		self.push_text(kind, text, Some(position));
+	}
+
+	fn signed_text(&mut self, kind: RequestText, text: &str) {
+		self.push_text(kind, text, None);
+	}
+}
+
+impl MessageView {
+	fn push_text(&mut self, kind: RequestText, text: &str, position: Option<usize>) {
+		if self.messages.is_empty() {
+			self.message("");
+		}
+		let Some((message, positions)) = self.messages.last_mut().zip(self.positions.last_mut()) else {
+			return;
+		};
+		let part = match kind.scope {
+			ContentScope::ToolInput => Some(PartKind::ToolCall),
+			ContentScope::ToolOutput => Some(PartKind::ToolResult),
+			_ if kind.reasoning => Some(PartKind::Reasoning),
+			_ => None,
+		};
+		if let Some(part) = part {
+			if self.include_parts && !text.is_empty() && self.scope.contains(&kind.scope) {
+				message.parts.get_or_insert_default().push(MessagePart {
+					kind: part,
+					text: text.to_owned(),
+				});
+				positions.parts.push(position);
+			}
+		}
+		// Keep text already exposed as content there, even when it also has a part.
+		if part.is_none() || kind.in_content {
+			if !positions.content.is_empty() {
+				message.content.push(' ');
+			}
+			message.content.push_str(text);
+			positions.content.push(position);
+		}
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ResponseChoices {
@@ -140,7 +290,6 @@ pub enum ResponseAction {
 	Pass(PassAction),
 }
 
-/// Enum for MaskAction body that can be either PromptMessages or ResponseChoices
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaskActionBody {
@@ -314,6 +463,7 @@ mod tests {
 			forward_header_matches: vec![],
 			failure_mode: FailureMode::FailClosed,
 			action: RejectAuditAction::Reject,
+			message_parts: false,
 		}
 	}
 
